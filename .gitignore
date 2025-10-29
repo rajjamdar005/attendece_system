@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+**/.env
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+.nyc_output/
+
+# Firmware
+firmware/**/.pio/
+firmware/**/build/
+firmware/**/*.bin
+firmware/**/*.elf
+
+# Supabase
+.branches/
+.temp/
+
+# Docker
+*.docker-compose.override.yml
+
+# Misc
+*.pem
+*.key
+!public.key
