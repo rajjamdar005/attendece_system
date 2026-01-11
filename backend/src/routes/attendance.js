@@ -1,7 +1,7 @@
 import express from 'express';
 import { query } from 'express-validator';
 import { supabase } from '../config/database.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, authorize } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 
 const router = express.Router();
@@ -11,6 +11,7 @@ router.use(authenticate);
 /**
  * GET /api/v1/attendance
  * Get attendance logs with filtering
+ * Roles: All authenticated users (read-only for technicians)
  */
 router.get(
   '/',
@@ -31,20 +32,25 @@ router.get(
       offset = 0,
     } = req.query;
 
+    // Sanitize company_id (frontend might send "null" as string)
+    const sanitizedCompanyId = (company_id && company_id !== 'null') ? company_id : null;
+
     let query = supabase
       .from('attendance_logs')
       .select(`
         *,
-        employees (id, full_name, employee_code),
-        devices (device_uuid, device_name, location),
+        employees (id, name, employee_id),
+        devices (device_uuid, location),
         companies (name)
       `);
 
     // Apply company filter based on role
-    if (role === 'company_admin' && user_company_id) {
+    // company_admin and technician can ONLY see their own company (ignore query params)
+    if ((role === 'company_admin' || role === 'technician') && user_company_id) {
       query = query.eq('company_id', user_company_id);
-    } else if (company_id) {
-      query = query.eq('company_id', company_id);
+    } else if (role === 'incubation_head' && sanitizedCompanyId) {
+      // incubation_head can filter by company or see all
+      query = query.eq('company_id', sanitizedCompanyId);
     }
 
     if (employee_id) {

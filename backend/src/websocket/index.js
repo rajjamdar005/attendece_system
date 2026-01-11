@@ -47,8 +47,8 @@ export function setupWebSocket(wss) {
           .from('attendance_logs')
           .select(`
             *,
-            employees (full_name, employee_code, photo_url),
-            devices (device_name, location),
+            employees (name, employee_id),
+            devices (device_uuid, location),
             companies (name)
           `)
           .eq('id', payload.new.id)

@@ -61,7 +61,13 @@ export async function authenticateDevice(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
 
+    logger.info('[AUTH] Device auth attempt', {
+      hasAuthHeader: !!authHeader,
+      headerStart: authHeader ? authHeader.substring(0, 20) + '...' : 'none'
+    });
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      logger.warn('[AUTH] Missing or invalid auth header');
       return res.status(401).json({
         success: false,
         error: {
@@ -72,6 +78,10 @@ export async function authenticateDevice(req, res, next) {
     }
 
     const token = authHeader.substring(7);
+    logger.info('[AUTH] Token received', { 
+      tokenPrefix: token.substring(0, 20) + '...',
+      tokenLength: token.length 
+    });
 
     // Query device tokens and match using bcrypt
     const { data: deviceTokens, error } = await supabase
@@ -80,7 +90,6 @@ export async function authenticateDevice(req, res, next) {
         id,
         device_id,
         token_hash,
-        is_active,
         expires_at,
         devices (
           id,
@@ -89,10 +98,15 @@ export async function authenticateDevice(req, res, next) {
           company_id,
           is_active
         )
-      `)
-      .eq('is_active', true);
+      `);
+
+    logger.info('[AUTH] Active tokens in DB', { 
+      count: deviceTokens?.length || 0,
+      hasError: !!error 
+    });
 
     if (error || !deviceTokens || deviceTokens.length === 0) {
+      logger.error('[AUTH] No active device tokens found', { error });
       return res.status(401).json({
         success: false,
         error: {
@@ -106,6 +120,11 @@ export async function authenticateDevice(req, res, next) {
     let matchedToken = null;
     for (const dt of deviceTokens) {
       const isMatch = await bcrypt.compare(token, dt.token_hash);
+      logger.info('[AUTH] Token comparison', {
+        deviceId: dt.devices?.device_uuid,
+        hashPrefix: dt.token_hash.substring(0, 20) + '...',
+        matches: isMatch
+      });
       if (isMatch) {
         matchedToken = dt;
         break;
@@ -113,6 +132,7 @@ export async function authenticateDevice(req, res, next) {
     }
 
     if (!matchedToken) {
+      logger.warn('[AUTH] No matching token found for provided token');
       return res.status(401).json({
         success: false,
         error: {
@@ -121,6 +141,11 @@ export async function authenticateDevice(req, res, next) {
         },
       });
     }
+
+    logger.info('[AUTH] Token matched successfully', {
+      deviceUuid: matchedToken.devices?.device_uuid,
+      deviceId: matchedToken.device_id
+    });
 
     // Check expiration
     if (matchedToken.expires_at && new Date(matchedToken.expires_at) < new Date()) {
@@ -198,7 +223,7 @@ export function authorize(...allowedRoles) {
  */
 export function checkCompanyAccess(req, res, next) {
   const { role, company_id } = req.user;
-  const requestedCompanyId = parseInt(req.params.companyId || req.body.company_id || req.query.company_id);
+  const requestedCompanyId = req.params.companyId || req.body.company_id || req.query.company_id;
 
   // Incubation head can access all companies
   if (role === 'incubation_head') {
@@ -206,7 +231,12 @@ export function checkCompanyAccess(req, res, next) {
   }
 
   // Company admin can only access their own company
-  if (role === 'company_admin' && company_id !== requestedCompanyId) {
+  // Compare as strings since company_id can be UUID or integer
+  const userCompanyId = String(company_id);
+  const reqCompanyId = String(requestedCompanyId);
+  
+  if (role === 'company_admin' && userCompanyId !== reqCompanyId) {
+    logger.info(`[ACCESS DENIED] User company: ${userCompanyId}, Requested company: ${reqCompanyId}`);
     return res.status(403).json({
       success: false,
       error: {

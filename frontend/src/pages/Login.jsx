@@ -26,11 +26,10 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-600 to-primary-800">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br bg-slate-800">
       <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">RFID Attendance</h1>
-          <p className="text-gray-600 mt-2">Multi-Company Incubation Centre</p>
+        <div className="text-center mb-8">         
+          <p className="text-black-600 font-extrabold">Welcome to the Incubation Centre</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">

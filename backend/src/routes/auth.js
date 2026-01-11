@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../config/database.js';
 import { generateToken, hashPassword, comparePassword } from '../utils/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { authenticate } from '../middleware/auth.js';
 import logger from '../utils/logger.js';
 
 const router = express.Router();
@@ -39,6 +40,17 @@ router.post(
       .eq('username', username)
       .single();
 
+    // Debug logging
+    logger.info(`Login attempt for username: ${username}`);
+    if (error) {
+      logger.error(`Supabase error fetching user: ${error.message}`, error);
+    }
+    if (!user) {
+      logger.warn(`User not found: ${username}`);
+    } else {
+      logger.info(`User found: ${user.username}, role: ${user.role}, active: ${user.is_active}`);
+    }
+
     if (error || !user) {
       return res.status(401).json({
         success: false,
@@ -61,7 +73,11 @@ router.post(
     }
 
     // Verify password
+    logger.info(`Verifying password for user: ${username}`);
+    logger.info(`Password hash from DB: ${user.password_hash?.substring(0, 20)}...`);
     const isValidPassword = await comparePassword(password, user.password_hash);
+    logger.info(`Password verification result: ${isValidPassword}`);
+    
     if (!isValidPassword) {
       return res.status(401).json({
         success: false,
@@ -77,6 +93,17 @@ router.post(
       .from('users')
       .update({ last_login: new Date().toISOString() })
       .eq('id', user.id);
+
+    // Fetch company name if user has a company
+    let companyName = null;
+    if (user.company_id) {
+      const { data: companyData } = await supabase
+        .from('companies')
+        .select('name')
+        .eq('id', user.company_id)
+        .single();
+      companyName = companyData?.name || null;
+    }
 
     // Generate token
     const token = generateToken(user);
@@ -94,6 +121,7 @@ router.post(
           email: user.email,
           role: user.role,
           company_id: user.company_id,
+          company_name: companyName,
         },
       },
     });
@@ -178,6 +206,23 @@ router.post(
           email: newUser.email,
           role: newUser.role,
         },
+      },
+    });
+  })
+);
+
+/**
+ * GET /api/v1/auth/me
+ * Get current user info (for debugging)
+ */
+router.get(
+  '/me',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        user: req.user,
       },
     });
   })

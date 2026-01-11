@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import { hasPermission, hasAnyPermission, hasAllPermissions, canAccessCompany } from '../utils/permissions'
 
 const AuthContext = createContext(null)
 
@@ -45,11 +46,32 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
+  // Permission check helpers
+  const checkPermission = (permission) => {
+    return hasPermission(user?.role, permission)
+  }
+
+  const checkAnyPermission = (permissions) => {
+    return hasAnyPermission(user?.role, permissions)
+  }
+
+  const checkAllPermissions = (permissions) => {
+    return hasAllPermissions(user?.role, permissions)
+  }
+
+  const checkCompanyAccess = (companyId) => {
+    return canAccessCompany(user, companyId)
+  }
+
   const value = {
     user,
     loading,
     login,
     logout,
+    hasPermission: checkPermission,
+    hasAnyPermission: checkAnyPermission,
+    hasAllPermissions: checkAllPermissions,
+    canAccessCompany: checkCompanyAccess,
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

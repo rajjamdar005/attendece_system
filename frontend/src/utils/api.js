@@ -38,11 +38,24 @@ export const api = {
       body: JSON.stringify(data),
     }).then(handleResponse),
 
+  createCompanyWithAdmin: (data) =>
+    fetch(`${API_URL}/companies/with-admin`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    }).then(handleResponse),
+
   updateCompany: (id, data) =>
     fetch(`${API_URL}/companies/${id}`, {
       method: 'PUT',
       headers: getAuthHeaders(),
       body: JSON.stringify(data),
+    }).then(handleResponse),
+
+  deleteCompany: (id) =>
+    fetch(`${API_URL}/companies/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
     }).then(handleResponse),
 
   // Employees
@@ -67,6 +80,12 @@ export const api = {
       body: JSON.stringify(data),
     }).then(handleResponse),
 
+  deleteEmployee: (id) =>
+    fetch(`${API_URL}/employees/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    }).then(handleResponse),
+
   // Tags
   getTags: (params = {}) => {
     const query = new URLSearchParams(params).toString()
@@ -82,6 +101,12 @@ export const api = {
       body: JSON.stringify({ tag_uid, employee_id, note }),
     }).then(handleResponse),
 
+  // Devices
+  getDevices: () =>
+    fetch(`${API_URL}/devices`, {
+      headers: getAuthHeaders(),
+    }).then(handleResponse),
+
   // Attendance
   getAttendance: (params = {}) => {
     const query = new URLSearchParams(params).toString()
@@ -91,22 +116,61 @@ export const api = {
   },
 
   // Reports
-  getDailyReport: (company_id, date) =>
-    fetch(`${API_URL}/reports/daily?company_id=${company_id}&date=${date}`, {
+  getDailyReport: (company_id, start_date, end_date) => {
+    const params = new URLSearchParams()
+    if (company_id) params.append('company_id', company_id)
+    if (start_date) params.append('start_date', start_date)
+    if (end_date) params.append('end_date', end_date)
+    return fetch(`${API_URL}/reports/daily?${params.toString()}`, {
       headers: getAuthHeaders(),
-    }).then(handleResponse),
+    }).then(handleResponse)
+  },
 
   getDeviceHealth: () =>
     fetch(`${API_URL}/reports/device-health`, {
       headers: getAuthHeaders(),
     }).then(handleResponse),
 
-  exportAttendance: (company_id, from, to) => {
-    const query = new URLSearchParams({ company_id, from, to }).toString()
-    return fetch(`${API_URL}/reports/export?${query}`, {
+  exportAttendance: (company_id, from, to, format = 'csv') => {
+    const params = new URLSearchParams({ from, to, format })
+    if (company_id) params.append('company_id', company_id)
+    return fetch(`${API_URL}/reports/export?${params.toString()}`, {
       headers: getAuthHeaders(),
-    }).then(response => response.blob())
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error('Export failed')
+      }
+      return response.blob()
+    })
   },
+
+  // Users
+  getUsers: (params = {}) => {
+    const query = new URLSearchParams(params).toString()
+    return fetch(`${API_URL}/users?${query}`, {
+      headers: getAuthHeaders(),
+    }).then(handleResponse)
+  },
+
+  createUser: (data) =>
+    fetch(`${API_URL}/users`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    }).then(handleResponse),
+
+  updateUser: (id, data) =>
+    fetch(`${API_URL}/users/${id}`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(data),
+    }).then(handleResponse),
+
+  deleteUser: (id) =>
+    fetch(`${API_URL}/users/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    }).then(handleResponse),
 }
 
 export default api
