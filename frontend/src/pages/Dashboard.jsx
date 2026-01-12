@@ -298,11 +298,12 @@ export default function Dashboard() {
                     </div>
                     <div className="text-right">
                       <p className="text-xs font-medium text-gray-600">
-                        {new Date(log.recorded_at).toLocaleTimeString('en-IN', {
+                        {new Intl.DateTimeFormat('en-IN', {
                           hour: '2-digit',
                           minute: '2-digit',
-                          timeZone: 'Asia/Kolkata'
-                        })}
+                          timeZone: 'Asia/Kolkata',
+                          hour12: false
+                        }).format(new Date(log.recorded_at))}
                       </p>
                     </div>
                   </div>
