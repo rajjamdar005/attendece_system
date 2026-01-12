@@ -920,7 +920,15 @@ String getISOTimestamp() {
   if (!getLocalTime(&ti)) return "";  // Return empty - backend will use current time
   // Validate year is reasonable (between 2020-2100)
   if (ti.tm_year + 1900 < 2020 || ti.tm_year + 1900 > 2100) return "";
-  char b[25]; strftime(b, sizeof(b), "%Y-%m-%dT%H:%M:%S", &ti); return String(b);
+  
+  // Convert IST to UTC by subtracting 5 hours 30 minutes (19800 seconds)
+  time_t now = mktime(&ti);
+  now -= 19800;  // Subtract IST offset to get UTC
+  struct tm* utc = gmtime(&now);
+  
+  char b[25]; 
+  strftime(b, sizeof(b), "%Y-%m-%dT%H:%M:%SZ", utc);  // 'Z' indicates UTC
+  return String(b);
 }
 String getCurrentTime() {
   struct tm ti; if (!getLocalTime(&ti)) return "--:--";
