@@ -57,15 +57,21 @@ const allowedOrigins = process.env.CORS_ORIGIN
       'http://127.0.0.1:3000',
     ];
 
+// Debug: Log allowed origins on startup
+console.log('[CORS] Allowed origins:', allowedOrigins);
+console.log('[CORS] CORS_ORIGIN env:', process.env.CORS_ORIGIN);
+
 export const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (like mobile apps, Postman, curl, ESP32)
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.indexOf(origin) !== -1) {
+      console.log(`[CORS] Allowed origin: ${origin}`);
       callback(null, true);
     } else {
       console.log(`[CORS] Blocked origin: ${origin}`);
+      console.log(`[CORS] Allowed origins list:`, allowedOrigins);
       callback(new Error('Not allowed by CORS'));
     }
   },
