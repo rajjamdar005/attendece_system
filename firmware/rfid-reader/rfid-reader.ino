@@ -56,6 +56,7 @@ String DEVICE_SECRET = "";
 const char* FIRMWARE_VERSION = "2.0.0";
 const char* DEVICE_NAME      = "invubation attendence Reader";
 const char* LOCATION         = "Building A – Ground Floor";
+const char* DEVICE_PROVISIONING_SECRET = "my-secure-provisioning-key-2026";  // Must match backend env var
 
 const unsigned long DEBOUNCE_TIME        = 3000;
 const unsigned long HEARTBEAT_INTERVAL   = 300000;
@@ -637,8 +638,8 @@ void registerDevice() {
   
   // Generate device secret if not exists
   if (DEVICE_SECRET.length() == 0) {
-    DEVICE_SECRET = generateDeviceSecret();
-    Serial.println("[NET] Generated device secret: " + DEVICE_SECRET.substring(0, 16) + "...");
+    DEVICE_SECRET = String(DEVICE_PROVISIONING_SECRET);  // Use fixed provisioning secret
+    Serial.println("[NET] Using provisioning secret for registration");
   }
   
   Serial.println("[NET] Registering device …");
