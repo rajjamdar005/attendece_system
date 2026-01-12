@@ -931,31 +931,38 @@ void ledCheckOut() {
   digitalWrite(LED_RED, LOW);
 }
 
-// Beep feedback patterns
+// Beep feedback patterns (using digitalWrite for FreeRTOS compatibility)
 void beepSuccess() {
-  tone(BUZZER_PIN, 1500, 100);
-  vTaskDelay(pdMS_TO_TICKS(150));
+  digitalWrite(BUZZER_PIN, HIGH);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  digitalWrite(BUZZER_PIN, LOW);
 }
 
 void beepError() {
   for (int i = 0; i < 3; i++) {
-    tone(BUZZER_PIN, 500, 150);
-    vTaskDelay(pdMS_TO_TICKS(300));
+    digitalWrite(BUZZER_PIN, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    digitalWrite(BUZZER_PIN, LOW);
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
 
 void beepCheckIn() {
-  tone(BUZZER_PIN, 1000, 100);
-  vTaskDelay(pdMS_TO_TICKS(120));
-  tone(BUZZER_PIN, 1500, 100);
-  vTaskDelay(pdMS_TO_TICKS(150));
+  // Short beep for check-in
+  digitalWrite(BUZZER_PIN, HIGH);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  digitalWrite(BUZZER_PIN, LOW);
 }
 
 void beepCheckOut() {
-  tone(BUZZER_PIN, 1500, 100);
-  vTaskDelay(pdMS_TO_TICKS(120));
-  tone(BUZZER_PIN, 1000, 100);
-  vTaskDelay(pdMS_TO_TICKS(150));
+  // Double beep for check-out
+  digitalWrite(BUZZER_PIN, HIGH);
+  vTaskDelay(pdMS_TO_TICKS(80));
+  digitalWrite(BUZZER_PIN, LOW);
+  vTaskDelay(pdMS_TO_TICKS(80));
+  digitalWrite(BUZZER_PIN, HIGH);
+  vTaskDelay(pdMS_TO_TICKS(80));
+  digitalWrite(BUZZER_PIN, LOW);
 }
 
 // Generate unique device secret
@@ -1042,10 +1049,11 @@ void checkConfigButton() {
       for (int i = 0; i < 5; i++) {
         digitalWrite(LED_RED, HIGH);
         digitalWrite(LED_GREEN, HIGH);
-        tone(BUZZER_PIN, 1000, 200);
+        digitalWrite(BUZZER_PIN, HIGH);
         vTaskDelay(pdMS_TO_TICKS(200));
         digitalWrite(LED_RED, LOW);
         digitalWrite(LED_GREEN, LOW);
+        digitalWrite(BUZZER_PIN, LOW);
         vTaskDelay(pdMS_TO_TICKS(200));
       }
       

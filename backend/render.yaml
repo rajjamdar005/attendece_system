@@ -1,0 +1,75 @@
+services:
+  - type: web
+    name: rfid-attendance-backend
+    env: node
+    region: singapore  # Choose closest region to India
+    plan: free  # Change to 'starter' for production (no sleep)
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    
+    envVars:
+      - key: NODE_ENV
+        value: production
+      
+      - key: PORT
+        value: 10000  # Render's default internal port
+      
+      # Database - Add these in Render Dashboard (Secret Files)
+      - key: SUPABASE_URL
+        sync: false
+      
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      
+      # JWT Configuration - Add in Render Dashboard
+      - key: JWT_SECRET
+        generateValue: true  # Auto-generate secure random value
+      
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 30d
+      
+      # Device Token Configuration
+      - key: DEVICE_TOKEN_SALT_ROUNDS
+        value: 10
+      
+      - key: DEVICE_TOKEN_EXPIRES_DAYS
+        value: 365
+      
+      # Rate Limiting
+      - key: RATE_LIMIT_WINDOW_MS
+        value: 900000
+      
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: 500
+      
+      - key: RATE_LIMIT_DEVICE_MAX
+        value: 300
+      
+      # CORS Configuration - UPDATE THIS with your frontend URL
+      - key: CORS_ORIGIN
+        value: http://localhost:5173,https://your-frontend-domain.vercel.app
+      
+      # Logging
+      - key: LOG_LEVEL
+        value: info
+      
+      # Security
+      - key: BCRYPT_ROUNDS
+        value: 10
+      
+      # Retention policy (days)
+      - key: LOG_RETENTION_DAYS
+        value: 90
+      
+      - key: AUDIT_RETENTION_DAYS
+        value: 365
+
+# Auto-deploy from GitHub (optional)
+# Connect your GitHub repo in Render dashboard to enable auto-deployment

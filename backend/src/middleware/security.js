@@ -46,25 +46,26 @@ export const deviceRegisterLimiter = rateLimit({
 
 /**
  * CORS Configuration
- * Whitelist allowed origins
+ * Whitelist allowed origins (supports environment variable for production)
  */
-const allowedOrigins = [
-  'http://localhost:5173', // Vite dev server
-  'http://localhost:3000',
-  'http://127.0.0.1:5173',
-  'http://127.0.0.1:3000',
-  // Add production origins here:
-  // 'https://yourdomain.com',
-];
+const allowedOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
+  : [
+      'http://localhost:5173', // Vite dev server
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:3000',
+    ];
 
 export const corsOptions = {
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps, Postman, or curl)
+    // Allow requests with no origin (like mobile apps, Postman, curl, ESP32)
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
+      console.log(`[CORS] Blocked origin: ${origin}`);
       callback(new Error('Not allowed by CORS'));
     }
   },
