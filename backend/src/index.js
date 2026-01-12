@@ -38,6 +38,9 @@ import { setupWebSocket } from './websocket/index.js';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust proxy - Required for Render, Heroku, etc. (behind reverse proxy)
+app.set('trust proxy', 1);
+
 // =====================================================
 // MIDDLEWARE
 // =====================================================
