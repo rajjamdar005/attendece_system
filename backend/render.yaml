@@ -54,7 +54,7 @@ services:
       
       # CORS Configuration - UPDATE THIS with your frontend URL
       - key: CORS_ORIGIN
-        value: http://localhost:5173,https://your-frontend-domain.vercel.app
+        value: http://localhost:5173,https://attendece-system-fawn.vercel.app
       
       # Logging
       - key: LOG_LEVEL

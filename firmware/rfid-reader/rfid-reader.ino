@@ -17,6 +17,7 @@
  */
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <SPI.h>
@@ -41,7 +42,7 @@ const char* WIFI_PASSWORD_1 = "";       // Primary WiFi Password
 const char* WIFI_SSID_2     = "NetworkTwo";      // Secondary WiFi SSID
 const char* WIFI_PASSWORD_2 = "password2";       // Secondary WiFi Password
 
-const char* API_URL_DEFAULT        = "http://10.188.0.250:3000";
+const char* API_URL_DEFAULT        = "https://attendece-system.onrender.com";
 const char* DEVICE_UUID_DEFAULT    = "esp-reader-01";
 
 // Runtime configuration
@@ -643,6 +644,16 @@ void registerDevice() {
   Serial.println("[NET] Registering device …");
   Serial.println("[NET] Target: " + API_URL + "/api/v1/devices/register");
   
+  // Use WiFiClientSecure for HTTPS
+  WiFiClientSecure *client = new WiFiClientSecure;
+  if (!client) {
+    Serial.println("✗ Failed to create HTTPS client");
+    return;
+  }
+  
+  // Skip SSL certificate verification (accept all certificates)
+  client->setInsecure();
+  
   HTTPClient http;
   StaticJsonDocument<256> doc;
   doc["device_uuid"] = DEVICE_UUID;
@@ -653,7 +664,7 @@ void registerDevice() {
   
   Serial.println("[NET] Payload: " + payload);
   
-  http.begin(API_URL + "/api/v1/devices/register");
+  http.begin(*client, API_URL + "/api/v1/devices/register");
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(15000);  // 15 second timeout
   
@@ -688,6 +699,7 @@ void registerDevice() {
     else if (httpCode == -1) Serial.println("  → Connection refused (server not listening)");
   }
   http.end();
+  delete client;
 }
 
 bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
@@ -707,6 +719,16 @@ bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
     
     Serial.println("  [NET] Sending with token: " + DEVICE_TOKEN.substring(0, 20) + "...");
     
+    // Use WiFiClientSecure for HTTPS
+    WiFiClientSecure *client = new WiFiClientSecure;
+    if (!client) {
+      Serial.println("  [NET] Failed to create HTTPS client");
+      return false;
+    }
+    
+    // Skip SSL certificate verification
+    client->setInsecure();
+    
     HTTPClient http;
     StaticJsonDocument<256> doc;
     doc["device_uuid"] = DEVICE_UUID;
@@ -717,7 +739,7 @@ bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
     
     Serial.println("  [NET] Payload: " + payload);
     
-    http.begin(API_URL + "/api/v1/devices/event");
+    http.begin(*client, API_URL + "/api/v1/devices/event");
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Authorization", "Bearer " + DEVICE_TOKEN);
     http.setTimeout(10000);
@@ -733,12 +755,14 @@ bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
       strncpy(r.eventType, eventType.c_str(), 7); r.eventType[7] = '\0';
       Serial.println("  [NET] ✓ Event sent: " + eventType);
       http.end();
+      delete client;
       return true;
     } else if (httpCode == 401) {
       // Token expired - re-register
       Serial.println("  [NET] Token expired - re-registering");
       errorStats.tokenExpired++;
       http.end();
+      delete client;
       registerDevice();
       continue;  // Retry with new token
     } else {
@@ -748,6 +772,7 @@ bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
         errorStats.httpErrors++;
       }
       http.end();
+      delete client;
       if (attempt == maxRetries) return false;
     }
   }
@@ -756,6 +781,12 @@ bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
 
 void sendHeartbeat() {
   if (DEVICE_TOKEN.length() == 0) return;
+  
+  // Use WiFiClientSecure for HTTPS
+  WiFiClientSecure *client = new WiFiClientSecure;
+  if (!client) return;
+  client->setInsecure();
+  
   HTTPClient http;
   StaticJsonDocument<512> doc;
   doc["firmware_version"] = FIRMWARE_VERSION;
@@ -772,7 +803,7 @@ void sendHeartbeat() {
   errors["token_expired"] = errorStats.tokenExpired;
   
   String payload; serializeJson(doc, payload);
-  http.begin(String(API_URL) + "/api/v1/devices/heartbeat");
+  http.begin(*client, String(API_URL) + "/api/v1/devices/heartbeat");
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", "Bearer " + DEVICE_TOKEN);
   int httpCode = http.POST(payload);
@@ -782,6 +813,7 @@ void sendHeartbeat() {
     errorStats.httpErrors++;
   }
   http.end();
+  delete client;
 }
 
 /* ===================================================================
