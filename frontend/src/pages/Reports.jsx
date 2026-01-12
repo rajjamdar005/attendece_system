@@ -268,7 +268,7 @@ export default function Reports() {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{log.company_name}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{log.location}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {format(new Date(log.recorded_at), 'MMM dd, yyyy HH:mm')}
+                      {format(new Date(log.recorded_at), 'MMM dd, yyyy HH:mm', { timeZone: 'Asia/Kolkata' })}
                     </td>
                   </tr>
                 ))}

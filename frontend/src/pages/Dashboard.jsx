@@ -103,11 +103,20 @@ export default function Dashboard() {
   }
 
   const formatTime = (date) => {
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    return date.toLocaleTimeString('en-IN', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      timeZone: 'Asia/Kolkata'
+    })
   }
 
   const formatDate = (date) => {
-    return date.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
+    return date.toLocaleDateString('en-IN', { 
+      weekday: 'long', 
+      month: 'short', 
+      day: 'numeric',
+      timeZone: 'Asia/Kolkata'
+    })
   }
 
   return (
@@ -289,9 +298,10 @@ export default function Dashboard() {
                     </div>
                     <div className="text-right">
                       <p className="text-xs font-medium text-gray-600">
-                        {new Date(log.recorded_at).toLocaleTimeString('en-US', {
+                        {new Date(log.recorded_at).toLocaleTimeString('en-IN', {
                           hour: '2-digit',
-                          minute: '2-digit'
+                          minute: '2-digit',
+                          timeZone: 'Asia/Kolkata'
                         })}
                       </p>
                     </div>
