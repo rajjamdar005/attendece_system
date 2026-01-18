@@ -5,8 +5,38 @@ import { authenticate, authorize, authenticateDevice } from '../middleware/auth.
 import { generateDeviceToken, hashDeviceToken } from '../utils/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import logger from '../utils/logger.js';
+import multer from 'multer';
+import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
 
 const router = express.Router();
+
+// Configure multer for firmware uploads
+const FIRMWARE_DIR = process.env.FIRMWARE_DIR || './firmware';
+if (!fs.existsSync(FIRMWARE_DIR)) {
+  fs.mkdirSync(FIRMWARE_DIR, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, FIRMWARE_DIR),
+  filename: (req, file, cb) => {
+    const version = req.body.version || 'unknown';
+    cb(null, `firmware-${version}-${Date.now()}.bin`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 4 * 1024 * 1024 }, // 4MB max (ESP32 partition limit)
+  fileFilter: (req, file, cb) => {
+    if (file.originalname.endsWith('.bin')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only .bin files are allowed'));
+    }
+  }
+});
 
 /**
  * GET /api/v1/devices
@@ -298,6 +328,278 @@ router.post(
       data: {
         server_time: new Date().toISOString(),
       },
+    });
+  })
+);
+
+/* ===================================================================
+ *  FIRMWARE MANAGEMENT ENDPOINTS
+ * =================================================================== */
+
+/**
+ * GET /api/v1/devices/firmware
+ * Check for firmware update (called by ESP32)
+ * Returns 304 if up to date, 200 with binary if update available
+ */
+router.get(
+  '/firmware',
+  asyncHandler(async (req, res) => {
+    const { device_uuid, version } = req.query;
+
+    logger.info('[FIRMWARE] Update check', { device_uuid, current_version: version });
+
+    // Get active firmware
+    const { data: firmware, error } = await supabase
+      .from('firmware')
+      .select('*')
+      .eq('is_active', true)
+      .single();
+
+    if (error || !firmware) {
+      logger.info('[FIRMWARE] No active firmware available');
+      return res.status(304).send(); // Not modified
+    }
+
+    // Compare versions (simple string comparison for now)
+    if (version && version >= firmware.version) {
+      logger.info('[FIRMWARE] Device is up to date', { device: version, server: firmware.version });
+      return res.status(304).send(); // Not modified
+    }
+
+    // Send firmware binary
+    const firmwarePath = path.join(FIRMWARE_DIR, firmware.filename);
+    if (!fs.existsSync(firmwarePath)) {
+      logger.error('[FIRMWARE] File not found', { path: firmwarePath });
+      return res.status(404).json({
+        success: false,
+        error: { message: 'Firmware file not found' }
+      });
+    }
+
+    logger.info('[FIRMWARE] Sending update', { 
+      device_uuid, 
+      from: version, 
+      to: firmware.version,
+      size: firmware.file_size 
+    });
+
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', firmware.file_size);
+    res.setHeader('X-Firmware-Version', firmware.version);
+    
+    const stream = fs.createReadStream(firmwarePath);
+    stream.pipe(res);
+  })
+);
+
+/**
+ * GET /api/v1/devices/firmware/list
+ * List all firmware versions (for technician dashboard)
+ */
+router.get(
+  '/firmware/list',
+  authenticate,
+  authorize('technician', 'incubation_head'),
+  asyncHandler(async (req, res) => {
+    const { data: firmwares, error } = await supabase
+      .from('firmware')
+      .select(`
+        *,
+        users (username)
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    res.json({
+      success: true,
+      data: firmwares
+    });
+  })
+);
+
+/**
+ * POST /api/v1/devices/firmware/upload
+ * Upload new firmware (technician only)
+ */
+router.post(
+  '/firmware/upload',
+  authenticate,
+  authorize('technician', 'incubation_head'),
+  upload.single('firmware'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'No firmware file uploaded' }
+      });
+    }
+
+    const { version, release_notes, set_active } = req.body;
+
+    if (!version) {
+      // Delete uploaded file
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Version is required' }
+      });
+    }
+
+    // Check if version already exists
+    const { data: existing } = await supabase
+      .from('firmware')
+      .select('id')
+      .eq('version', version)
+      .single();
+
+    if (existing) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        success: false,
+        error: { message: `Version ${version} already exists` }
+      });
+    }
+
+    // Calculate checksum
+    const fileBuffer = fs.readFileSync(req.file.path);
+    const checksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+    // If set_active, deactivate other firmware first
+    if (set_active === 'true' || set_active === true) {
+      await supabase
+        .from('firmware')
+        .update({ is_active: false })
+        .eq('is_active', true);
+    }
+
+    // Insert firmware record
+    const { data: firmware, error } = await supabase
+      .from('firmware')
+      .insert({
+        version,
+        filename: req.file.filename,
+        file_size: req.file.size,
+        checksum,
+        release_notes: release_notes || null,
+        is_active: set_active === 'true' || set_active === true,
+        uploaded_by: req.user.id
+      })
+      .select()
+      .single();
+
+    if (error) {
+      fs.unlinkSync(req.file.path);
+      throw new Error(error.message);
+    }
+
+    logger.info('[FIRMWARE] Uploaded', { 
+      version, 
+      size: req.file.size, 
+      by: req.user.username,
+      active: firmware.is_active 
+    });
+
+    res.status(201).json({
+      success: true,
+      data: firmware
+    });
+  })
+);
+
+/**
+ * PUT /api/v1/devices/firmware/:id/activate
+ * Set firmware as active (rollout to devices)
+ */
+router.put(
+  '/firmware/:id/activate',
+  authenticate,
+  authorize('technician', 'incubation_head'),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    // Deactivate all firmware
+    await supabase
+      .from('firmware')
+      .update({ is_active: false })
+      .eq('is_active', true);
+
+    // Activate selected firmware
+    const { data: firmware, error } = await supabase
+      .from('firmware')
+      .update({ is_active: true, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    logger.info('[FIRMWARE] Activated', { version: firmware.version, by: req.user.username });
+
+    res.json({
+      success: true,
+      data: firmware
+    });
+  })
+);
+
+/**
+ * DELETE /api/v1/devices/firmware/:id
+ * Delete firmware version
+ */
+router.delete(
+  '/firmware/:id',
+  authenticate,
+  authorize('technician', 'incubation_head'),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    // Get firmware to delete file
+    const { data: firmware, error: fetchError } = await supabase
+      .from('firmware')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !firmware) {
+      return res.status(404).json({
+        success: false,
+        error: { message: 'Firmware not found' }
+      });
+    }
+
+    if (firmware.is_active) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Cannot delete active firmware. Activate another version first.' }
+      });
+    }
+
+    // Delete file
+    const firmwarePath = path.join(FIRMWARE_DIR, firmware.filename);
+    if (fs.existsSync(firmwarePath)) {
+      fs.unlinkSync(firmwarePath);
+    }
+
+    // Delete record
+    const { error } = await supabase
+      .from('firmware')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    logger.info('[FIRMWARE] Deleted', { version: firmware.version, by: req.user.username });
+
+    res.json({
+      success: true,
+      message: `Firmware ${firmware.version} deleted`
     });
   })
 );

@@ -24,7 +24,10 @@
 #include <MFRC522.h>
 #include <LittleFS.h>
 #include <ArduinoOTA.h>
+#include <ESPmDNS.h>
+#include <Update.h>
 #include <Wire.h>
+#include <map>
 #include <LiquidCrystal_I2C.h>
 #include <time.h>
 #include <freertos/FreeRTOS.h>
@@ -39,8 +42,8 @@
 // Device will try Network 1 first, then Network 2 if Network 1 fails
 const char* WIFI_SSID_1     = "sid";      // Primary WiFi SSID
 const char* WIFI_PASSWORD_1 = "";       // Primary WiFi Password
-const char* WIFI_SSID_2     = "NetworkTwo";      // Secondary WiFi SSID
-const char* WIFI_PASSWORD_2 = "password2";       // Secondary WiFi Password
+const char* WIFI_SSID_2     = "EngiiGenius";      // Secondary WiFi SSID
+const char* WIFI_PASSWORD_2 = "Engii@123";       // Secondary WiFi Password
 
 const char* API_URL_DEFAULT        = "https://attendece-system.onrender.com";
 const char* DEVICE_UUID_DEFAULT    = "esp-reader-01";
@@ -54,9 +57,13 @@ String DEVICE_TOKEN  = "";
 String DEVICE_SECRET = "";
 
 const char* FIRMWARE_VERSION = "2.0.0";
-const char* DEVICE_NAME      = "invubation attendence Reader";
+const char* DEVICE_NAME      = "incubation attendence Reader";
 const char* LOCATION         = "Building A – Ground Floor";
 const char* DEVICE_PROVISIONING_SECRET = "my-secure-provisioning-key-2026";  // Must match backend env var
+const char* OTA_UPDATE_URL = "https://attendece-system.onrender.com/api/v1/devices/firmware";  // HTTP OTA endpoint
+
+// Anti-Passback: Track last event type per card to prevent IN→IN or OUT→OUT
+std::map<String, String> lastEventTypeMap;  // UID -> last event type ("IN" or "OUT")
 
 const unsigned long DEBOUNCE_TIME        = 3000;
 const unsigned long HEARTBEAT_INTERVAL   = 300000;
@@ -125,6 +132,7 @@ struct EventResponse {
   bool success;
   char employeeName[32];
   char eventType[8];
+  char responseUid[24];  // Store UID to verify response matches request
   bool buffered;
 };
 struct LcdMessage {
@@ -186,6 +194,9 @@ void logCrash(String reason);
 void checkConfigButton();
 void queueLcdMessage(uint8_t t, const char* l1="", const char* l2="");
 void processLcdMessage(LcdMessage& m);
+void setupMDNS();
+void checkHttpOTA();
+bool checkAntiPassback(const String& uid, const String& eventType);
 /* -------------------------------------------------- */
 
 void setup() {
@@ -279,6 +290,7 @@ void setup() {
   esp_task_wdt_init(WATCHDOG_TIMEOUT_SEC, true);
   Serial.println("✓ Watchdog timer enabled (" + String(WATCHDOG_TIMEOUT_SEC) + "s)");
   setupOTA();
+  setupMDNS();  // Enable mDNS discovery
 
   if (DEVICE_TOKEN.length() == 0 && wifiConnected) {
     Serial.println("⚠ Device not registered – trying registration...");
@@ -354,10 +366,26 @@ void rfidTask(void* pv) {
           queueLcdMessage(LCD_MSG_BUFFERED); beepError();
         }
 
+        // Clear any stale responses before waiting for new one
+        EventResponse staleResp;
+        while (xQueueReceive(responseQueue, &staleResp, 0) == pdTRUE) {
+          Serial.println("    [RFID] Cleared stale response from queue");
+        }
+
         EventResponse r;
+        memset(&r, 0, sizeof(r));  // Clear the response struct
         if (xQueueReceive(responseQueue, &r, pdMS_TO_TICKS(5000)) == pdTRUE) {
-          if (r.success) {
+          // Verify response is for the current UID (ignore mismatched responses)
+          if (strcmp(r.responseUid, uid.c_str()) != 0) {
+            Serial.println("    [RFID] ⚠ Response UID mismatch! Expected: " + uid + ", Got: " + String(r.responseUid));
+            // Treat as failed, show error
+            queueLcdMessage(LCD_MSG_ERROR, "", "Sync Error");
+            ledError(); beepError();
+          } else if (r.success) {
             Serial.println("    [RFID] ✓ Server: " + String(r.employeeName) + " (" + String(r.eventType) + ")");
+            
+            // Update anti-passback tracking
+            updateAntiPassback(uid, String(r.eventType));
             
             // Enhanced feedback based on event type
             if (strcmp(r.eventType, "IN") == 0) {
@@ -416,6 +444,7 @@ void networkTask(void* pv) {
   Serial.println("[NET] Task on Core " + String(xPortGetCoreID()));
   HTTPClient http;
   unsigned long lastHB = 0, lastWifiChk = 0, lastRegRetry = 0;
+  unsigned int heartbeatCount = 0;  // For periodic OTA check
 
   while (true) {
     unsigned long now = millis();
@@ -462,6 +491,8 @@ void networkTask(void* pv) {
       memset(&r, 0, sizeof(r));
       r.success = false;
       r.buffered = false;
+      strncpy(r.responseUid, e.uid, 23);  // Copy UID to response
+      r.responseUid[23] = '\0';
       
       if (wifiConnected && deviceRegistered) {
         Serial.println("[NET] Attempting to send to server...");
@@ -494,7 +525,15 @@ void networkTask(void* pv) {
 
     if (now - lastHB >= HEARTBEAT_INTERVAL) {
       lastHB = now;
-      if (wifiConnected && deviceRegistered) sendHeartbeat();
+      if (wifiConnected && deviceRegistered) {
+        sendHeartbeat();
+        heartbeatCount++;
+        // Check for firmware updates every 10 heartbeats (~5 minutes)
+        if (heartbeatCount >= 10) {
+          heartbeatCount = 0;
+          checkHttpOTA();
+        }
+      }
     }
     
     // Check config button for WiFi reset
@@ -914,6 +953,106 @@ void setupOTA() {
 }
 
 /* ===================================================================
+ *  mDNS Discovery
+ * =================================================================== */
+void setupMDNS() {
+  if (MDNS.begin(DEVICE_UUID.c_str())) {
+    MDNS.addService("rfid-reader", "tcp", 80);
+    MDNS.addServiceTxt("rfid-reader", "tcp", "version", FIRMWARE_VERSION);
+    MDNS.addServiceTxt("rfid-reader", "tcp", "location", LOCATION);
+    Serial.println("✓ mDNS started: " + DEVICE_UUID + ".local");
+  } else {
+    Serial.println("✗ mDNS failed to start");
+  }
+}
+
+/* ===================================================================
+ *  HTTP OTA (Remote Firmware Update)
+ * =================================================================== */
+void checkHttpOTA() {
+  if (!wifiConnected || DEVICE_TOKEN.length() == 0) return;
+  
+  Serial.println("[OTA] Checking for firmware updates...");
+  queueLcdMessage(LCD_MSG_CUSTOM, "Checking OTA...", "");
+  
+  WiFiClientSecure *client = new WiFiClientSecure;
+  if (!client) return;
+  client->setInsecure();
+  
+  HTTPClient http;
+  http.begin(*client, String(OTA_UPDATE_URL) + "?device_uuid=" + DEVICE_UUID + "&version=" + FIRMWARE_VERSION);
+  http.addHeader("Authorization", "Bearer " + DEVICE_TOKEN);
+  http.setTimeout(30000);
+  
+  int httpCode = http.GET();
+  
+  if (httpCode == 200) {
+    int contentLength = http.getSize();
+    if (contentLength > 0) {
+      Serial.println("[OTA] Update available: " + String(contentLength) + " bytes");
+      queueLcdMessage(LCD_MSG_CUSTOM, "Updating...", "Don't power off!");
+      
+      if (Update.begin(contentLength)) {
+        WiFiClient& stream = http.getStream();
+        size_t written = Update.writeStream(stream);
+        
+        if (written == contentLength) {
+          Serial.println("[OTA] Written: " + String(written) + " bytes");
+        } else {
+          Serial.println("[OTA] Write failed: " + String(written) + "/" + String(contentLength));
+        }
+        
+        if (Update.end()) {
+          if (Update.isFinished()) {
+            Serial.println("[OTA] Update successful! Rebooting...");
+            queueLcdMessage(LCD_MSG_CUSTOM, "Update Done!", "Restarting...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            ESP.restart();
+          } else {
+            Serial.println("[OTA] Update not finished");
+          }
+        } else {
+          Serial.println("[OTA] Update error: " + String(Update.getError()));
+        }
+      } else {
+        Serial.println("[OTA] Not enough space for update");
+      }
+    } else {
+      Serial.println("[OTA] No update available (empty response)");
+    }
+  } else if (httpCode == 304) {
+    Serial.println("[OTA] Firmware is up to date");
+  } else {
+    Serial.println("[OTA] Check failed: " + String(httpCode));
+  }
+  
+  http.end();
+  delete client;
+}
+
+/* ===================================================================
+ *  Anti-Passback Logic
+ * =================================================================== */
+bool checkAntiPassback(const String& uid, const String& expectedEventType) {
+  // Get last event type for this card
+  if (lastEventTypeMap.find(uid) != lastEventTypeMap.end()) {
+    String lastType = lastEventTypeMap[uid];
+    
+    // Anti-passback: Prevent same action twice in a row
+    if (lastType == expectedEventType) {
+      Serial.println("    [ANTI-PASSBACK] Blocked: " + uid + " already " + lastType);
+      return false;  // Block this action
+    }
+  }
+  return true;  // Allow action
+}
+
+void updateAntiPassback(const String& uid, const String& eventType) {
+  lastEventTypeMap[uid] = eventType;
+  Serial.println("    [ANTI-PASSBACK] Updated: " + uid + " -> " + eventType);
+}
+
+/* ===================================================================
  *  Utils
  * =================================================================== */
 String getISOTimestamp() {
@@ -922,22 +1061,24 @@ String getISOTimestamp() {
   // Validate year is reasonable (between 2020-2100)
   if (ti.tm_year + 1900 < 2020 || ti.tm_year + 1900 > 2100) return "";
   
-  // Convert IST to UTC by subtracting 5 hours 30 minutes (19800 seconds)
-  time_t now = mktime(&ti);
-  now -= 19800;  // Subtract IST offset to get UTC
-  struct tm* utc = gmtime(&now);
-  
-  char b[25]; 
-  strftime(b, sizeof(b), "%Y-%m-%dT%H:%M:%SZ", utc);  // 'Z' indicates UTC
+  // Send IST timestamp with +05:30 timezone indicator
+  char b[30]; 
+  strftime(b, sizeof(b), "%Y-%m-%dT%H:%M:%S+05:30", &ti);
   return String(b);
 }
 String getCurrentTime() {
-  struct tm ti; if (!getLocalTime(&ti)) return "--:--";
-  char b[6]; strftime(b, sizeof(b), "%H:%M", &ti); return String(b);
+  struct tm ti; 
+  if (!getLocalTime(&ti)) return "--:--";
+  char b[6]; 
+  strftime(b, sizeof(b), "%H:%M", &ti); 
+  return String(b);
 }
 String getCurrentDate() {
-  struct tm ti; if (!getLocalTime(&ti)) return "--/--";
-  char b[6]; strftime(b, sizeof(b), "%d/%m", &ti); return String(b);
+  struct tm ti; 
+  if (!getLocalTime(&ti)) return "--/--";
+  char b[6]; 
+  strftime(b, sizeof(b), "%d/%m", &ti); 
+  return String(b);
 }
 
 /* ===================================================================

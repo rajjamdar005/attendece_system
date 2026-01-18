@@ -1,18 +1,32 @@
 import { useState, useEffect } from 'react'
-import { Radio, MapPin, Wifi, WifiOff, AlertCircle, Activity, Clock, Search } from 'lucide-react'
+import { Radio, MapPin, Wifi, WifiOff, AlertCircle, Activity, Clock, Search, Upload, Download, Trash2, Check, Package } from 'lucide-react'
 import { PageLoader, SpinnerOverlay } from '../components/Loaders'
 import SectionHeader from '../components/SectionHeader'
 import KpiCard from '../components/KpiCard'
 import { formatDistanceToNow } from 'date-fns'
 import api from '../utils/api'
+import { useAuth } from '../context/AuthContext'
 
 export default function Devices() {
+  const { user } = useAuth()
   const [devices, setDevices] = useState([])
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
   const [processing, setProcessing] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
+  
+  // Firmware management state
+  const [firmwareList, setFirmwareList] = useState([])
+  const [showFirmwarePanel, setShowFirmwarePanel] = useState(false)
+  const [uploadingFirmware, setUploadingFirmware] = useState(false)
+  const [firmwareForm, setFirmwareForm] = useState({
+    version: '',
+    release_notes: '',
+    set_active: false
+  })
+
+  const isTechnician = user?.role === 'technician' || user?.role === 'incubation_head'
 
   useEffect(() => {
     fetchData()
@@ -20,6 +34,12 @@ export default function Devices() {
     const interval = setInterval(fetchData, 30000)
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    if (isTechnician) {
+      fetchFirmwareList()
+    }
+  }, [isTechnician])
 
   const fetchData = async () => {
     try {
@@ -35,6 +55,82 @@ export default function Devices() {
       if (devices.length === 0) alert('Failed to load devices')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const fetchFirmwareList = async () => {
+    try {
+      const res = await api.getFirmwareList()
+      setFirmwareList(res.data || [])
+    } catch (error) {
+      console.error('Error fetching firmware list:', error)
+    }
+  }
+
+  const handleFirmwareUpload = async (e) => {
+    e.preventDefault()
+    const fileInput = document.getElementById('firmware-file')
+    const file = fileInput?.files?.[0]
+    
+    if (!file) {
+      alert('Please select a firmware file')
+      return
+    }
+
+    if (!firmwareForm.version) {
+      alert('Please enter a version number')
+      return
+    }
+
+    try {
+      setUploadingFirmware(true)
+      const formData = new FormData()
+      formData.append('firmware', file)
+      formData.append('version', firmwareForm.version)
+      formData.append('release_notes', firmwareForm.release_notes)
+      formData.append('set_active', firmwareForm.set_active)
+
+      await api.uploadFirmware(formData)
+      alert('Firmware uploaded successfully!')
+      setFirmwareForm({ version: '', release_notes: '', set_active: false })
+      fileInput.value = ''
+      fetchFirmwareList()
+    } catch (error) {
+      console.error('Error uploading firmware:', error)
+      alert(error.message || 'Failed to upload firmware')
+    } finally {
+      setUploadingFirmware(false)
+    }
+  }
+
+  const handleActivateFirmware = async (id, version) => {
+    if (!confirm(`Activate firmware v${version}? All devices will update to this version.`)) return
+    
+    try {
+      setProcessing(true)
+      await api.activateFirmware(id)
+      alert(`Firmware v${version} is now active. Devices will update on next check.`)
+      fetchFirmwareList()
+    } catch (error) {
+      console.error('Error activating firmware:', error)
+      alert(error.message || 'Failed to activate firmware')
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const handleDeleteFirmware = async (id, version) => {
+    if (!confirm(`Delete firmware v${version}? This cannot be undone.`)) return
+    
+    try {
+      setProcessing(true)
+      await api.deleteFirmware(id)
+      fetchFirmwareList()
+    } catch (error) {
+      console.error('Error deleting firmware:', error)
+      alert(error.message || 'Failed to delete firmware')
+    } finally {
+      setProcessing(false)
     }
   }
 
@@ -93,6 +189,161 @@ export default function Devices() {
         <KpiCard title="Warning" value={stats.warning} icon={AlertCircle} tone="yellow" />
         <KpiCard title="Offline" value={stats.offline} icon={WifiOff} tone="red" />
       </div>
+
+      {/* Firmware Management Panel (Technician Only) */}
+      {isTechnician && (
+        <div className="card">
+          <div 
+            className="flex items-center justify-between cursor-pointer"
+            onClick={() => setShowFirmwarePanel(!showFirmwarePanel)}
+          >
+            <div className="flex items-center space-x-3">
+              <Package className="w-6 h-6 text-indigo-600" />
+              <div>
+                <h3 className="font-semibold text-gray-900">Firmware Management</h3>
+                <p className="text-sm text-gray-500">
+                  {firmwareList.find(f => f.is_active)?.version 
+                    ? `Active: v${firmwareList.find(f => f.is_active).version}` 
+                    : 'No active firmware'}
+                </p>
+              </div>
+            </div>
+            <button className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+              {showFirmwarePanel ? 'Hide' : 'Manage'}
+            </button>
+          </div>
+
+          {showFirmwarePanel && (
+            <div className="mt-6 space-y-6">
+              {/* Upload Form */}
+              <form onSubmit={handleFirmwareUpload} className="bg-gray-50 rounded-lg p-4 space-y-4">
+                <h4 className="font-medium text-gray-900">Upload New Firmware</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Version *
+                    </label>
+                    <input
+                      type="text"
+                      value={firmwareForm.version}
+                      onChange={(e) => setFirmwareForm({ ...firmwareForm, version: e.target.value })}
+                      placeholder="e.g., 2.1.0"
+                      className="input w-full"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Firmware File (.bin) *
+                    </label>
+                    <input
+                      id="firmware-file"
+                      type="file"
+                      accept=".bin"
+                      className="input w-full file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                      required
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Release Notes
+                  </label>
+                  <textarea
+                    value={firmwareForm.release_notes}
+                    onChange={(e) => setFirmwareForm({ ...firmwareForm, release_notes: e.target.value })}
+                    placeholder="What's new in this version?"
+                    className="input w-full"
+                    rows={2}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      checked={firmwareForm.set_active}
+                      onChange={(e) => setFirmwareForm({ ...firmwareForm, set_active: e.target.checked })}
+                      className="w-4 h-4 text-indigo-600 rounded border-gray-300"
+                    />
+                    <span className="text-sm text-gray-700">Set as active (rollout to devices)</span>
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={uploadingFirmware}
+                    className="btn btn-primary flex items-center space-x-2"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>{uploadingFirmware ? 'Uploading...' : 'Upload Firmware'}</span>
+                  </button>
+                </div>
+              </form>
+
+              {/* Firmware List */}
+              <div>
+                <h4 className="font-medium text-gray-900 mb-3">Available Firmware Versions</h4>
+                {firmwareList.length === 0 ? (
+                  <p className="text-gray-500 text-sm">No firmware uploaded yet</p>
+                ) : (
+                  <div className="space-y-2">
+                    {firmwareList.map((fw) => (
+                      <div 
+                        key={fw.id} 
+                        className={`flex items-center justify-between p-3 rounded-lg border ${
+                          fw.is_active ? 'bg-green-50 border-green-200' : 'bg-white border-gray-200'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3">
+                          {fw.is_active && (
+                            <span className="flex items-center justify-center w-6 h-6 bg-green-500 rounded-full">
+                              <Check className="w-4 h-4 text-white" />
+                            </span>
+                          )}
+                          <div>
+                            <div className="flex items-center space-x-2">
+                              <span className="font-medium text-gray-900">v{fw.version}</span>
+                              {fw.is_active && (
+                                <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
+                                  Active
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {(fw.file_size / 1024).toFixed(1)} KB • 
+                              Uploaded {formatDistanceToNow(new Date(fw.created_at), { addSuffix: true })}
+                              {fw.users?.username && ` by ${fw.users.username}`}
+                            </div>
+                            {fw.release_notes && (
+                              <p className="text-sm text-gray-600 mt-1">{fw.release_notes}</p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          {!fw.is_active && (
+                            <>
+                              <button
+                                onClick={() => handleActivateFirmware(fw.id, fw.version)}
+                                className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+                              >
+                                Activate
+                              </button>
+                              <button
+                                onClick={() => handleDeleteFirmware(fw.id, fw.version)}
+                                className="text-sm text-red-600 hover:text-red-800"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-col md:flex-row gap-4">

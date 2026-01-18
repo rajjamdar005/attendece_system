@@ -107,6 +107,34 @@ export const api = {
       headers: getAuthHeaders(),
     }).then(handleResponse),
 
+  // Firmware Management
+  getFirmwareList: () =>
+    fetch(`${API_URL}/devices/firmware/list`, {
+      headers: getAuthHeaders(),
+    }).then(handleResponse),
+
+  uploadFirmware: (formData) =>
+    fetch(`${API_URL}/devices/firmware/upload`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('token')}`,
+        // Don't set Content-Type - let browser set it with boundary for FormData
+      },
+      body: formData,
+    }).then(handleResponse),
+
+  activateFirmware: (id) =>
+    fetch(`${API_URL}/devices/firmware/${id}/activate`, {
+      method: 'PUT',
+      headers: getAuthHeaders(),
+    }).then(handleResponse),
+
+  deleteFirmware: (id) =>
+    fetch(`${API_URL}/devices/firmware/${id}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+    }).then(handleResponse),
+
   // Attendance
   getAttendance: (params = {}) => {
     const query = new URLSearchParams(params).toString()
