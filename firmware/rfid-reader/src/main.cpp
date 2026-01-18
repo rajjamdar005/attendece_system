@@ -1,19 +1,16 @@
 /*
- *  ESP32 RFID Attendance System – Dual-Core FreeRTOS (ENHANCED)
+ *  ESP32 RFID Attendance System – Dual-Core FreeRTOS (ENHANCED OTA FIX)
  *  Core 1 : RFID + LCD + I/O
  *  Core 0 : Wi-Fi + HTTP + OTA + buffering
- *  https://github.com/EngiiGenius/ESP32-RFID-DualCore
+ *  https://github.com/EngiiGenius/ESP32-RFID-DualCore 
  *  
- *  ENHANCEMENTS:
- *  - WiFi Manager with fallback to hardcoded credentials
- *  - Watchdog timer for task monitoring
- *  - Enhanced LED patterns (IN/OUT/success/error)
- *  - Improved audio feedback
- *  - Event type display on LCD
- *  - Retry logic with exponential backoff
- *  - Error statistics tracking
- *  - Old buffer cleanup
- *  - Crash logging
+ *  ENHANCED OTA FIXES:
+ *  - Fixed WiFiClientSecure memory management
+ *  - Added proper memory checks before OTA
+ *  - Enhanced error handling and recovery
+ *  - Fixed Update.begin() failures
+ *  - Added download verification
+ *  - Improved restart reliability
  */
 
 #include <Arduino.h>
@@ -39,29 +36,26 @@
 #include <Preferences.h>
 
 /* ---------------- CONFIGURATION ---------------- */
-// Dual WiFi Network Configuration
-// Device will try Network 1 first, then Network 2 if Network 1 fails
-const char* WIFI_SSID_1     = "sid";      // Primary WiFi SSID
-const char* WIFI_PASSWORD_1 = "";       // Primary WiFi Password
-const char* WIFI_SSID_2     = "EngiiGenius";      // Secondary WiFi SSID
-const char* WIFI_PASSWORD_2 = "Engii@123";       // Secondary WiFi Password
+const char* WIFI_SSID_1     = "sid";
+const char* WIFI_PASSWORD_1 = "";
+const char* WIFI_SSID_2     = "EngiiGenius";
+const char* WIFI_PASSWORD_2 = "Engii@123";
 
 const char* API_URL_DEFAULT        = "https://attendece-system.onrender.com";
 const char* DEVICE_UUID_DEFAULT    = "esp-reader-01";
 
-// Runtime configuration
-String WIFI_SSID     = WIFI_SSID_1;  // Start with Network 1
+String WIFI_SSID     = WIFI_SSID_1;
 String WIFI_PASSWORD = WIFI_PASSWORD_1;
 String API_URL       = API_URL_DEFAULT;
 String DEVICE_UUID   = DEVICE_UUID_DEFAULT;
 String DEVICE_TOKEN  = "";
 String DEVICE_SECRET = "";
 
-const char* FIRMWARE_VERSION = "2.0.0";
+const char* FIRMWARE_VERSION = "2.1.5";  // Updated version for OTA Test
 const char* DEVICE_NAME      = "incubation attendence Reader";
 const char* LOCATION         = "Building A – Ground Floor";
-const char* DEVICE_PROVISIONING_SECRET = "my-secure-provisioning-key-2026";  // Must match backend env var
-const char* OTA_UPDATE_URL = "https://attendece-system.onrender.com/api/v1/devices/firmware";  // HTTP OTA endpoint
+const char* DEVICE_PROVISIONING_SECRET = "my-secure-provisioning-key-2026";
+const char* OTA_UPDATE_URL = "https://attendece-system.onrender.com/api/v1/devices/firmware";
 
 // Anti-Passback: Track last event type per card to prevent IN→IN or OUT→OUT
 std::map<String, String> lastEventTypeMap;  // UID -> last event type ("IN" or "OUT")
@@ -71,18 +65,19 @@ const unsigned long HEARTBEAT_INTERVAL   = 300000;
 const unsigned long LCD_MESSAGE_TIME     = 2000;
 const unsigned long RFID_SCAN_INTERVAL   = 50;
 const unsigned long NETWORK_CHECK_INTERVAL = 100;
-const unsigned long BUFFER_CLEANUP_INTERVAL = 3600000;  // 1 hour
+const unsigned long BUFFER_CLEANUP_INTERVAL = 3600000;
 const unsigned long WATCHDOG_TIMEOUT_SEC = 30;
 const int MAX_BUFFER_SIZE = 500;
 const int EVENT_QUEUE_SIZE = 10;
 const int MAX_EVENT_RETRIES = 3;
+const int MIN_FREE_HEAP_FOR_OTA = 150000;  // Minimum heap for OTA
 
 #define RST_PIN      27
 #define SS_PIN       5
 #define LED_GREEN    2
 #define LED_RED      15
 #define BUZZER_PIN   4
-#define CONFIG_BTN   0   // Boot button for WiFi reset
+#define CONFIG_BTN   0
 
 #define LCD_SDA  21
 #define LCD_SCL  22
@@ -113,13 +108,13 @@ volatile bool wifiConnected = false;
 volatile bool deviceRegistered = false;
 volatile bool useWiFiManager = false;
 
-// Error statistics
 struct ErrorStats {
   uint32_t wifiDisconnects;
   uint32_t httpErrors;
   uint32_t bufferOverflows;
   uint32_t ntpSyncFailures;
   uint32_t tokenExpired;
+  uint32_t otaFailures;
 } errorStats = {0};
 
 /* FreeRTOS objects */
@@ -133,7 +128,7 @@ struct EventResponse {
   bool success;
   char employeeName[32];
   char eventType[8];
-  char responseUid[24];  // Store UID to verify response matches request
+  char responseUid[24];
   bool buffered;
 };
 struct LcdMessage {
@@ -200,13 +195,14 @@ void checkHttpOTA();
 bool checkAntiPassback(const String& uid, const String& eventType);
 void updateAntiPassback(const String& uid, const String& eventType);
 void lcdTask(void* pv);
+bool performHttpOTAUpdate(const String& binURL, const String& expectedVersion, const String& md5Hash);
 /* -------------------------------------------------- */
 
 void setup() {
   Serial.begin(115200);
   Serial.println("\n\n=============================================");
   Serial.println("ESP32 RFID Attendance System – DUAL CORE");
-  Serial.println("Firmware: " + String(FIRMWARE_VERSION) + " (ENHANCED)");
+  Serial.println("Firmware: " + String(FIRMWARE_VERSION) + " (ENHANCED OTA FIX)");
   Serial.println("=============================================\n");
 
   pinMode(LED_GREEN, OUTPUT);
@@ -252,7 +248,6 @@ void setup() {
   }
   Serial.println("✓ RC522 ok (0x" + String(v, HEX) + ")");
 
-  // Initialize LittleFS
   if (!LittleFS.begin(true)) {
     Serial.println("✗ LittleFS mount failed");
   } else {
@@ -261,7 +256,6 @@ void setup() {
     countBufferedEvents();
   }
 
-  // Setup WiFi with dual network configuration
   lcd.clear();
   lcd.setCursor(0,0); lcd.write(byte(0)); lcd.print(" Connecting...");
   lcd.setCursor(0,1); lcd.print(String(WIFI_SSID_1).substring(0,16));
@@ -269,9 +263,8 @@ void setup() {
   setupWiFiManager();
   wifiConnected = (WiFi.status() == WL_CONNECTED);
 
-  // Configure NTP for Indian Standard Time (IST = UTC+5:30)
-  const long gmtOffset_sec = 19800;  // 5 hours 30 minutes = 19800 seconds
-  const int daylightOffset_sec = 0;   // India doesn't observe DST
+  const long gmtOffset_sec = 19800;
+  const int daylightOffset_sec = 0;
   configTime(gmtOffset_sec, daylightOffset_sec, "in.pool.ntp.org", "asia.pool.ntp.org", "pool.ntp.org");
   Serial.println("[TIME] Waiting for NTP sync (IST)...");
   struct tm timeinfo;
@@ -288,12 +281,11 @@ void setup() {
     errorStats.ntpSyncFailures++;
   }
   
-  // Initialize watchdog timer
   Serial.println("Initializing watchdog timer...");
   esp_task_wdt_init(WATCHDOG_TIMEOUT_SEC, true);
   Serial.println("✓ Watchdog timer enabled (" + String(WATCHDOG_TIMEOUT_SEC) + "s)");
   setupOTA();
-  setupMDNS();  // Enable mDNS discovery
+  setupMDNS();
 
   if (DEVICE_TOKEN.length() == 0 && wifiConnected) {
     Serial.println("⚠ Device not registered – trying registration...");
@@ -308,24 +300,21 @@ void setup() {
   xTaskCreatePinnedToCore(networkTask,"Network_Task",NETWORK_STACK_SIZE,NULL,NETWORK_TASK_PRIORITY,&networkTaskHandle,NETWORK_CORE);
   xTaskCreatePinnedToCore(lcdTask,    "LCD_Task",    LCD_STACK_SIZE,    NULL, LCD_TASK_PRIORITY,    &lcdTaskHandle,    RFID_CORE);
 
-  // Add tasks to watchdog after creation
   esp_task_wdt_add(rfidTaskHandle);
   esp_task_wdt_add(networkTaskHandle);
   esp_task_wdt_add(lcdTaskHandle);
   Serial.println("✓ Tasks added to watchdog");
 
-  // Simple beep without tone() to avoid LEDC initialization issues
   digitalWrite(BUZZER_PIN, HIGH);
   delay(100);
   digitalWrite(BUZZER_PIN, LOW);
   
-  // LCD task will display ready message
   Serial.println("\n=============================================");
   Serial.println("System running – waiting for RFID cards …");
   Serial.println("=============================================\n");
 }
 
-void loop() { vTaskDelay(portMAX_DELAY); }   // everything in tasks
+void loop() { vTaskDelay(portMAX_DELAY); }
 
 /* ===================================================================
  *  RFID TASK – Core 1
@@ -350,7 +339,7 @@ void rfidTask(void* pv) {
         lastUID = uid; lastScan = now;
         Serial.println("\n📡 [RFID] Card: " + uid);
 
-        ledCheckIn();  // Blink during scan
+        ledCheckIn();
         LcdMessage m; m.type = LCD_MSG_SCANNING;
         strncpy(m.line2, uid.c_str(), 16); m.line2[16] = '\0';
         xQueueSend(lcdQueue, &m, 0);
@@ -369,28 +358,22 @@ void rfidTask(void* pv) {
           queueLcdMessage(LCD_MSG_BUFFERED); beepError();
         }
 
-        // Clear any stale responses before waiting for new one
         EventResponse staleResp;
         while (xQueueReceive(responseQueue, &staleResp, 0) == pdTRUE) {
           Serial.println("    [RFID] Cleared stale response from queue");
         }
 
         EventResponse r;
-        memset(&r, 0, sizeof(r));  // Clear the response struct
+        memset(&r, 0, sizeof(r));
         if (xQueueReceive(responseQueue, &r, pdMS_TO_TICKS(5000)) == pdTRUE) {
-          // Verify response is for the current UID (ignore mismatched responses)
           if (strcmp(r.responseUid, uid.c_str()) != 0) {
             Serial.println("    [RFID] ⚠ Response UID mismatch! Expected: " + uid + ", Got: " + String(r.responseUid));
-            // Treat as failed, show error
             queueLcdMessage(LCD_MSG_ERROR, "", "Sync Error");
             ledError(); beepError();
           } else if (r.success) {
             Serial.println("    [RFID] ✓ Server: " + String(r.employeeName) + " (" + String(r.eventType) + ")");
-            
-            // Update anti-passback tracking
             updateAntiPassback(uid, String(r.eventType));
             
-            // Enhanced feedback based on event type
             if (strcmp(r.eventType, "IN") == 0) {
               ledCheckIn(); beepCheckIn();
             } else if (strcmp(r.eventType, "OUT") == 0) {
@@ -400,7 +383,6 @@ void rfidTask(void* pv) {
             }
             
             LcdMessage ok; ok.type = LCD_MSG_SUCCESS;
-            // Format event type for display: "CHECK IN!" or "CHECK OUT!"
             if (strcmp(r.eventType, "IN") == 0) {
               strncpy(ok.line1, "CHECK IN!", 16);
             } else if (strcmp(r.eventType, "OUT") == 0) {
@@ -435,7 +417,7 @@ void rfidTask(void* pv) {
       mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1();
     }
     
-    esp_task_wdt_reset();  // Reset watchdog
+    esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(RFID_SCAN_INTERVAL));
   }
 }
@@ -447,12 +429,11 @@ void networkTask(void* pv) {
   Serial.println("[NET] Task on Core " + String(xPortGetCoreID()));
   HTTPClient http;
   unsigned long lastHB = 0, lastWifiChk = 0, lastRegRetry = 0;
-  unsigned int heartbeatCount = 0;  // For periodic OTA check
+  unsigned int heartbeatCount = 0;
 
   while (true) {
     unsigned long now = millis();
 
-    // Periodic buffer cleanup (every hour)
     if (now - lastBufferCleanup >= BUFFER_CLEANUP_INTERVAL) {
       lastBufferCleanup = now;
       if (xSemaphoreTake(fsMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
@@ -474,7 +455,6 @@ void networkTask(void* pv) {
       } else wifiConnected = true;
     }
 
-    // Auto-retry registration if not registered
     if (wifiConnected && !deviceRegistered && (now - lastRegRetry >= 30000)) {
       lastRegRetry = now;
       Serial.println("[NET] Auto-retry registration...");
@@ -494,7 +474,7 @@ void networkTask(void* pv) {
       memset(&r, 0, sizeof(r));
       r.success = false;
       r.buffered = false;
-      strncpy(r.responseUid, e.uid, 23);  // Copy UID to response
+      strncpy(r.responseUid, e.uid, 23);
       r.responseUid[23] = '\0';
       
       if (wifiConnected && deviceRegistered) {
@@ -531,7 +511,6 @@ void networkTask(void* pv) {
       if (wifiConnected && deviceRegistered) {
         sendHeartbeat();
         heartbeatCount++;
-        // Check for firmware updates every 10 heartbeats (~5 minutes)
         if (heartbeatCount >= 10) {
           heartbeatCount = 0;
           checkHttpOTA();
@@ -539,22 +518,19 @@ void networkTask(void* pv) {
       }
     }
     
-    // Check config button for WiFi reset
     checkConfigButton();
-    
-    esp_task_wdt_reset();  // Reset watchdog
+    esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(NETWORK_CHECK_INTERVAL));
   }
 }
 
 /* ===================================================================
- *  LCD TASK – Core 1 (low priority)
+ *  LCD TASK – Core 1
  * =================================================================== */
 void lcdTask(void* pv) {
   Serial.println("[LCD] Task on Core " + String(xPortGetCoreID()));
-  vTaskDelay(pdMS_TO_TICKS(100));  // Let other tasks initialize
+  vTaskDelay(pdMS_TO_TICKS(100));
   
-  // Display initial ready screen
   if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
     lcd.clear();
     lcd.setCursor(0,0); lcd.write(byte(0));
@@ -593,7 +569,7 @@ void lcdTask(void* pv) {
       }
     }
     
-    esp_task_wdt_reset();  // Reset watchdog
+    esp_task_wdt_reset();
     vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
@@ -602,11 +578,9 @@ void lcdTask(void* pv) {
  *  Wi-Fi
  * =================================================================== */
 void setupWiFiManager() {
-  // Dual WiFi Network Manager - tries Network 1 → Network 2 → Saved credentials
   Serial.println("[NET] Starting Dual WiFi Manager...");
   preferences.begin("wifi", false);
   
-  // Try saved credentials first (from previous successful connection)
   String savedSSID = preferences.getString("ssid", "");
   String savedPass = preferences.getString("pass", "");
   
@@ -623,7 +597,6 @@ void setupWiFiManager() {
     }
   }
   
-  // Try Network 1 (Primary)
   Serial.println("[NET] Trying Network 1: " + String(WIFI_SSID_1));
   WIFI_SSID = WIFI_SSID_1;
   WIFI_PASSWORD = WIFI_PASSWORD_1;
@@ -637,7 +610,6 @@ void setupWiFiManager() {
     return;
   }
   
-  // Try Network 2 (Secondary)
   Serial.println("[NET] Network 1 failed. Trying Network 2: " + String(WIFI_SSID_2));
   WIFI_SSID = WIFI_SSID_2;
   WIFI_PASSWORD = WIFI_PASSWORD_2;
@@ -678,23 +650,20 @@ void connectWiFi() {
 void registerDevice() {
   if (WiFi.status() != WL_CONNECTED) return;
   
-  // Generate device secret if not exists
   if (DEVICE_SECRET.length() == 0) {
-    DEVICE_SECRET = String(DEVICE_PROVISIONING_SECRET);  // Use fixed provisioning secret
+    DEVICE_SECRET = String(DEVICE_PROVISIONING_SECRET);
     Serial.println("[NET] Using provisioning secret for registration");
   }
   
   Serial.println("[NET] Registering device …");
   Serial.println("[NET] Target: " + API_URL + "/api/v1/devices/register");
   
-  // Use WiFiClientSecure for HTTPS
   WiFiClientSecure *client = new WiFiClientSecure;
   if (!client) {
     Serial.println("✗ Failed to create HTTPS client");
     return;
   }
   
-  // Skip SSL certificate verification (accept all certificates)
   client->setInsecure();
   
   HTTPClient http;
@@ -709,7 +678,7 @@ void registerDevice() {
   
   http.begin(*client, API_URL + "/api/v1/devices/register");
   http.addHeader("Content-Type", "application/json");
-  http.setTimeout(15000);  // 15 second timeout
+  http.setTimeout(15000);
   
   Serial.println("[NET] Sending POST...");
   int httpCode = http.POST(payload);
@@ -731,7 +700,6 @@ void registerDevice() {
     beepSuccess();
   } else if (httpCode == 409) {
     Serial.println("⚠ Device already exists (THIS SHOULD NOT HAPPEN ANYMORE)");
-    Serial.println("  Backend should return 200 with new token. Check backend code.");
   } else {
     Serial.println("✗ Registration failed: " + String(httpCode));
     if (httpCode > 0) {
@@ -751,25 +719,23 @@ bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
     return false;
   }
   
-  int retryDelay = 1000;  // Start with 1 second
+  int retryDelay = 1000;
   
   for (int attempt = 1; attempt <= maxRetries; attempt++) {
     if (attempt > 1) {
       Serial.println("  [NET] Retry " + String(attempt) + "/" + String(maxRetries));
       vTaskDelay(pdMS_TO_TICKS(retryDelay));
-      retryDelay *= 2;  // Exponential backoff
+      retryDelay *= 2;
     }
     
     Serial.println("  [NET] Sending with token: " + DEVICE_TOKEN.substring(0, 20) + "...");
     
-    // Use WiFiClientSecure for HTTPS
     WiFiClientSecure *client = new WiFiClientSecure;
     if (!client) {
       Serial.println("  [NET] Failed to create HTTPS client");
       return false;
     }
     
-    // Skip SSL certificate verification
     client->setInsecure();
     
     HTTPClient http;
@@ -801,13 +767,12 @@ bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
       delete client;
       return true;
     } else if (httpCode == 401) {
-      // Token expired - re-register
       Serial.println("  [NET] Token expired - re-registering");
       errorStats.tokenExpired++;
       http.end();
       delete client;
       registerDevice();
-      continue;  // Retry with new token
+      continue;
     } else {
       Serial.println("  [NET] HTTP error: " + String(httpCode));
       if (httpCode > 0) {
@@ -825,7 +790,6 @@ bool sendEventToServer(RfidEvent& e, EventResponse& r, int maxRetries) {
 void sendHeartbeat() {
   if (DEVICE_TOKEN.length() == 0) return;
   
-  // Use WiFiClientSecure for HTTPS
   WiFiClientSecure *client = new WiFiClientSecure;
   if (!client) return;
   client->setInsecure();
@@ -837,13 +801,13 @@ void sendHeartbeat() {
   doc["free_heap"]        = ESP.getFreeHeap();
   doc["uptime_ms"]        = millis();
   
-  // Add error statistics
   JsonObject errors = doc.createNestedObject("errors");
   errors["wifi_disconnects"] = errorStats.wifiDisconnects;
   errors["http_errors"] = errorStats.httpErrors;
   errors["buffer_overflows"] = errorStats.bufferOverflows;
   errors["ntp_sync_failures"] = errorStats.ntpSyncFailures;
   errors["token_expired"] = errorStats.tokenExpired;
+  errors["ota_failures"] = errorStats.otaFailures;
   
   String payload; serializeJson(doc, payload);
   http.begin(*client, String(API_URL) + "/api/v1/devices/heartbeat");
@@ -885,7 +849,6 @@ void flushBuffer() {
       StaticJsonDocument<256> doc; deserializeJson(doc, file); file.close();
       RfidEvent e;
       strncpy(e.uid, doc["uid"] | "", 23);
-      // Update timestamp to current time when flushing (original may be invalid)
       String currentTs = getISOTimestamp();
       strncpy(e.timestamp, currentTs.c_str(), 24);
       e.rssi = doc["rssi"] | 0;
@@ -956,21 +919,7 @@ void setupOTA() {
 }
 
 /* ===================================================================
- *  mDNS Discovery
- * =================================================================== */
-void setupMDNS() {
-  if (MDNS.begin(DEVICE_UUID.c_str())) {
-    MDNS.addService("rfid-reader", "tcp", 80);
-    MDNS.addServiceTxt("rfid-reader", "tcp", "version", FIRMWARE_VERSION);
-    MDNS.addServiceTxt("rfid-reader", "tcp", "location", LOCATION);
-    Serial.println("✓ mDNS started: " + DEVICE_UUID + ".local");
-  } else {
-    Serial.println("✗ mDNS failed to start");
-  }
-}
-
-/* ===================================================================
- *  HTTP OTA (Remote Firmware Update)
+ *  HTTP OTA (Fixed Version)
  * =================================================================== */
 void checkHttpOTA() {
   if (!wifiConnected || DEVICE_TOKEN.length() == 0) {
@@ -982,12 +931,24 @@ void checkHttpOTA() {
   Serial.println("[OTA] Current version: " + String(FIRMWARE_VERSION));
   queueLcdMessage(LCD_MSG_CUSTOM, "Checking OTA...", "");
   
+  // Check available memory first
+  if (ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_OTA) {
+    Serial.println("[OTA] ERROR: Not enough memory for OTA update!");
+    Serial.println("[OTA] Free heap: " + String(ESP.getFreeHeap()) + " bytes");
+    Serial.println("[OTA] Required: " + String(MIN_FREE_HEAP_FOR_OTA) + " bytes");
+    queueLcdMessage(LCD_MSG_ERROR, "", "No memory!");
+    return;
+  }
+  
   WiFiClientSecure *client = new WiFiClientSecure;
   if (!client) {
     Serial.println("[OTA] ERROR: Failed to create HTTPS client");
+    queueLcdMessage(LCD_MSG_ERROR, "", "Client error!");
     return;
   }
+  
   client->setInsecure();
+  client->setTimeout(60000);  // 60 second timeout
   
   HTTPClient http;
   String url = String(OTA_UPDATE_URL) + "?device_uuid=" + DEVICE_UUID + "&version=" + FIRMWARE_VERSION;
@@ -1005,99 +966,33 @@ void checkHttpOTA() {
     int contentLength = http.getSize();
     String md5 = http.header("X-MD5");
     String newVersion = http.header("X-Firmware-Version");
+    String binURL = http.header("X-Binary-URL");
     
     Serial.println("[OTA] ✓ Update available!");
     Serial.println("[OTA]   Size: " + String(contentLength) + " bytes");
     Serial.println("[OTA]   New version: " + newVersion);
     Serial.println("[OTA]   MD5: " + md5);
+    Serial.println("[OTA]   Binary URL: " + binURL);
     
-    if (contentLength > 0) {
-      String sizeMsg = String(contentLength/1024) + " KB";
-      queueLcdMessage(LCD_MSG_CUSTOM, "Downloading...", sizeMsg.c_str());
+    if (contentLength > 0 && binURL.length() > 0) {
+      // Perform the actual OTA update
+      bool otaSuccess = performHttpOTAUpdate(binURL, newVersion, md5);
       
-      // Set MD5 for verification if provided
-      if (md5.length() > 0) {
-        Update.setMD5(md5.c_str());
-        Serial.println("[OTA] MD5 verification enabled");
-      }
-      
-      if (Update.begin(contentLength)) {
-        Serial.println("[OTA] Starting update...");
-        WiFiClient& stream = http.getStream();
+      if (otaSuccess) {
+        Serial.println("[OTA] ✓✓✓ UPDATE SUCCESSFUL! ✓✓✓");
+        Serial.println("[OTA] Rebooting in 3 seconds...");
+        queueLcdMessage(LCD_MSG_CUSTOM, "Update Done!", "Restarting...");
         
-        // Write firmware with progress tracking
-        size_t written = 0;
-        uint8_t buff[128];
-        int lastProgress = 0;
-        
-        while (http.connected() && (written < contentLength)) {
-          size_t available = stream.available();
-          if (available) {
-            int c = stream.readBytes(buff, min(available, sizeof(buff)));
-            written += Update.write(buff, c);
-            
-            // Show progress every 10%
-            int progress = (written * 100) / contentLength;
-            if (progress >= lastProgress + 10) {
-              Serial.println("[OTA] Progress: " + String(progress) + "%");
-              String progressMsg = String(progress) + "%";
-              queueLcdMessage(LCD_MSG_CUSTOM, "Updating...", progressMsg.c_str());
-              lastProgress = progress;
-            }
-          }
-          vTaskDelay(pdMS_TO_TICKS(1));
-        }
-        
-        Serial.println("[OTA] Download complete: " + String(written) + "/" + String(contentLength) + " bytes");
-        
-        // Check if all bytes were written
-        bool downloadComplete = (written == contentLength);
-        
-        if (!downloadComplete) {
-          Serial.println("[OTA] ERROR: Incomplete download!");
-          Update.abort();
-        } else {
-          Serial.println("[OTA] ✓ All bytes written successfully");
-          
-          // Finalize the update
-          if (Update.end(true)) {  // true = set boot partition
-            Serial.println("[OTA] ✓ Update finalized");
-            
-            // Check if update is finished (this can sometimes fail even when successful)
-            bool isFinished = Update.isFinished();
-            Serial.println("[OTA] isFinished: " + String(isFinished ? "true" : "false"));
-            
-            // CRITICAL FIX: Restart if bytes match, even if isFinished() returns false
-            // This is because isFinished() can be unreliable on some ESP32 variants
-            if (isFinished || downloadComplete) {
-              Serial.println("[OTA] ✓✓✓ UPDATE SUCCESSFUL! ✓✓✓");
-              Serial.println("[OTA] Rebooting in 3 seconds...");
-              queueLcdMessage(LCD_MSG_CUSTOM, "Update Done!", "Restarting...");
-              
-              // Give time for messages to be sent
-              vTaskDelay(pdMS_TO_TICKS(3000));
-              
-              Serial.println("[OTA] RESTARTING NOW...");
-              Serial.flush();
-              
-              ESP.restart();
-            } else {
-              Serial.println("[OTA] ERROR: Update not finished and bytes don't match");
-            }
-          } else {
-            Serial.println("[OTA] ERROR: Update.end() failed");
-            Serial.println("[OTA] Error code: " + String(Update.getError()));
-            queueLcdMessage(LCD_MSG_ERROR, "", "Update failed!");
-          }
-        }
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        Serial.flush();
+        ESP.restart();
       } else {
-        Serial.println("[OTA] ERROR: Not enough space for update");
-        Serial.println("[OTA] Required: " + String(contentLength) + " bytes");
-        Serial.println("[OTA] Free heap: " + String(ESP.getFreeHeap()) + " bytes");
-        queueLcdMessage(LCD_MSG_ERROR, "", "No space!");
+        Serial.println("[OTA] ✗ OTA update failed");
+        queueLcdMessage(LCD_MSG_ERROR, "", "Update failed!");
+        errorStats.otaFailures++;
       }
     } else {
-      Serial.println("[OTA] ERROR: Empty response (contentLength = 0)");
+      Serial.println("[OTA] ERROR: Invalid response headers");
     }
   } else if (httpCode == 304) {
     Serial.println("[OTA] ✓ Firmware is up to date");
@@ -1118,21 +1013,162 @@ void checkHttpOTA() {
   Serial.println("[OTA] Check complete");
 }
 
+bool performHttpOTAUpdate(const String& binURL, const String& expectedVersion, const String& md5Hash) {
+  Serial.println("[OTA] Starting HTTP OTA update...");
+  Serial.println("[OTA] Free heap before: " + String(ESP.getFreeHeap()) + " bytes");
+  
+  // Verify WiFi is still connected
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[OTA] ERROR: WiFi lost during update!");
+    return false;
+  }
+  
+  String sizeMsg = "Size: " + String(ESP.getFreeHeap()/1024) + " KB";
+  queueLcdMessage(LCD_MSG_CUSTOM, "Downloading...", sizeMsg.c_str());
+  
+  WiFiClientSecure updateClient;
+  updateClient.setInsecure();
+  updateClient.setTimeout(60000);
+  
+  HTTPClient httpUpdate;
+  httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  httpUpdate.begin(updateClient, binURL);
+  httpUpdate.addHeader("Authorization", "Bearer " + DEVICE_TOKEN);
+  httpUpdate.setTimeout(60000);
+  
+  Serial.println("[OTA] Connecting to binary URL...");
+  int httpCode = httpUpdate.GET();
+  
+  if (httpCode != 200) {
+    Serial.println("[OTA] ERROR: Failed to download binary - HTTP " + String(httpCode));
+    httpUpdate.end();
+    return false;
+  }
+  
+  int contentLength = httpUpdate.getSize();
+  Serial.println("[OTA] Binary size: " + String(contentLength) + " bytes");
+  
+  if (contentLength <= 0) {
+    Serial.println("[OTA] ERROR: Invalid binary size");
+    httpUpdate.end();
+    return false;
+  }
+  
+  // Check available flash space
+  bool canBegin = Update.begin(contentLength);
+  if (!canBegin) {
+    Serial.println("[OTA] ERROR: Not enough space to begin OTA");
+    Serial.println("[OTA] Required: " + String(contentLength) + " bytes");
+    Serial.println("[OTA] Free sketch space: " + String(ESP.getFreeSketchSpace()) + " bytes");
+    Update.printError(Serial);
+    httpUpdate.end();
+    return false;
+  }
+  
+  Serial.println("[OTA] ✓ Update.begin() successful");
+  
+  // Set MD5 if provided
+  if (md5Hash.length() > 0) {
+    Update.setMD5(md5Hash.c_str());
+    Serial.println("[OTA] MD5 verification enabled: " + md5Hash);
+  }
+  
+  // Download and write firmware
+  WiFiClient& stream = httpUpdate.getStream();
+  size_t written = 0;
+  size_t totalLength = contentLength;
+  int lastProgress = 0;
+  const size_t bufferSize = 1024;
+  uint8_t* buffer = (uint8_t*)malloc(bufferSize);
+  
+  if (!buffer) {
+    Serial.println("[OTA] ERROR: Failed to allocate download buffer");
+    httpUpdate.end();
+    return false;
+  }
+  
+  Serial.println("[OTA] Starting download and flash...");
+  
+  while (httpUpdate.connected() && (written < totalLength)) {
+    size_t available = stream.available();
+    if (available) {
+      size_t readBytes = stream.readBytes(buffer, min(available, bufferSize));
+      if (readBytes > 0) {
+        if (Update.write(buffer, readBytes) != readBytes) {
+          Serial.println("[OTA] ERROR: Write failed at " + String(written) + " bytes");
+          Update.printError(Serial);
+          free(buffer);
+          httpUpdate.end();
+          return false;
+        }
+        written += readBytes;
+        
+        // Show progress every 10%
+        int progress = (written * 100) / totalLength;
+        if (progress >= lastProgress + 10) {
+          Serial.println("[OTA] Progress: " + String(progress) + "%");
+          String progressMsg = String(progress) + "%";
+          queueLcdMessage(LCD_MSG_CUSTOM, "Updating...", progressMsg.c_str());
+          lastProgress = progress;
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  
+  free(buffer);
+  Serial.println("[OTA] Download complete: " + String(written) + "/" + String(totalLength) + " bytes");
+  
+  // Verify download completeness
+  if (written != totalLength) {
+    Serial.println("[OTA] ERROR: Incomplete download!");
+    Serial.println("[OTA] Expected: " + String(totalLength) + ", Got: " + String(written));
+    Update.abort();
+    httpUpdate.end();
+    return false;
+  }
+  
+  Serial.println("[OTA] ✓ All bytes written successfully");
+  
+  // Finalize the update
+  if (Update.end(true)) {  // true = set boot partition
+    Serial.println("[OTA] ✓ Update finalized successfully");
+    httpUpdate.end();
+    return true;
+  } else {
+    Serial.println("[OTA] ERROR: Update.end() failed");
+    Update.printError(Serial);
+    httpUpdate.end();
+    return false;
+  }
+}
+
+/* ===================================================================
+ *  mDNS Discovery
+ * =================================================================== */
+void setupMDNS() {
+  if (MDNS.begin(DEVICE_UUID.c_str())) {
+    MDNS.addService("rfid-reader", "tcp", 80);
+    MDNS.addServiceTxt("rfid-reader", "tcp", "version", FIRMWARE_VERSION);
+    MDNS.addServiceTxt("rfid-reader", "tcp", "location", LOCATION);
+    Serial.println("✓ mDNS started: " + DEVICE_UUID + ".local");
+  } else {
+    Serial.println("✗ mDNS failed to start");
+  }
+}
+
 /* ===================================================================
  *  Anti-Passback Logic
  * =================================================================== */
 bool checkAntiPassback(const String& uid, const String& expectedEventType) {
-  // Get last event type for this card
   if (lastEventTypeMap.find(uid) != lastEventTypeMap.end()) {
     String lastType = lastEventTypeMap[uid];
-    
-    // Anti-passback: Prevent same action twice in a row
     if (lastType == expectedEventType) {
       Serial.println("    [ANTI-PASSBACK] Blocked: " + uid + " already " + lastType);
-      return false;  // Block this action
+      return false;
     }
   }
-  return true;  // Allow action
+  return true;
 }
 
 void updateAntiPassback(const String& uid, const String& eventType) {
@@ -1145,15 +1181,14 @@ void updateAntiPassback(const String& uid, const String& eventType) {
  * =================================================================== */
 String getISOTimestamp() {
   struct tm ti;
-  if (!getLocalTime(&ti)) return "";  // Return empty - backend will use current time
-  // Validate year is reasonable (between 2020-2100)
+  if (!getLocalTime(&ti)) return "";
   if (ti.tm_year + 1900 < 2020 || ti.tm_year + 1900 > 2100) return "";
   
-  // Send IST timestamp with +05:30 timezone indicator
   char b[30]; 
   strftime(b, sizeof(b), "%Y-%m-%dT%H:%M:%S+05:30", &ti);
   return String(b);
 }
+
 String getCurrentTime() {
   struct tm ti; 
   if (!getLocalTime(&ti)) return "--:--";
@@ -1161,6 +1196,7 @@ String getCurrentTime() {
   strftime(b, sizeof(b), "%H:%M", &ti); 
   return String(b);
 }
+
 String getCurrentDate() {
   struct tm ti; 
   if (!getLocalTime(&ti)) return "--/--";
@@ -1172,8 +1208,6 @@ String getCurrentDate() {
 /* ===================================================================
  *  ENHANCED FEEDBACK FUNCTIONS
  * =================================================================== */
-
-// LED feedback patterns
 void ledSuccess() {
   digitalWrite(LED_GREEN, HIGH);
   vTaskDelay(pdMS_TO_TICKS(500));
@@ -1201,7 +1235,6 @@ void ledCheckOut() {
   digitalWrite(LED_RED, LOW);
 }
 
-// Beep feedback patterns (using digitalWrite for FreeRTOS compatibility)
 void beepSuccess() {
   digitalWrite(BUZZER_PIN, HIGH);
   vTaskDelay(pdMS_TO_TICKS(100));
@@ -1218,14 +1251,12 @@ void beepError() {
 }
 
 void beepCheckIn() {
-  // Short beep for check-in
   digitalWrite(BUZZER_PIN, HIGH);
   vTaskDelay(pdMS_TO_TICKS(100));
   digitalWrite(BUZZER_PIN, LOW);
 }
 
 void beepCheckOut() {
-  // Double beep for check-out
   digitalWrite(BUZZER_PIN, HIGH);
   vTaskDelay(pdMS_TO_TICKS(80));
   digitalWrite(BUZZER_PIN, LOW);
@@ -1235,7 +1266,6 @@ void beepCheckOut() {
   digitalWrite(BUZZER_PIN, LOW);
 }
 
-// Generate unique device secret
 String generateDeviceSecret() {
   String secret = "";
   uint8_t mac[6];
@@ -1254,7 +1284,6 @@ String generateDeviceSecret() {
   return secret;
 }
 
-// Clean old buffered events (older than 7 days)
 void cleanOldBufferedEvents() {
   if (xSemaphoreTake(fsMutex, pdMS_TO_TICKS(2000)) != pdTRUE) return;
   
@@ -1295,7 +1324,6 @@ void cleanOldBufferedEvents() {
   xSemaphoreGive(fsMutex);
 }
 
-// Check config button for WiFi reset
 void checkConfigButton() {
   static unsigned long pressStart = 0;
   static bool wasPressed = false;
@@ -1334,7 +1362,6 @@ void checkConfigButton() {
   }
 }
 
-// Log crash information
 void logCrash(String reason) {
   Serial.println("[CRASH] " + reason);
   Serial.println("[CRASH] Free heap: " + String(ESP.getFreeHeap()));
@@ -1363,6 +1390,7 @@ void queueLcdMessage(uint8_t t, const char* l1, const char* l2) {
   strncpy(m.line2, l2, 16); m.line2[16] = '\0';
   xQueueSend(lcdQueue, &m, pdMS_TO_TICKS(100));
 }
+
 void processLcdMessage(LcdMessage& m) {
   lcd.clear();
   switch (m.type) {
@@ -1376,9 +1404,8 @@ void processLcdMessage(LcdMessage& m) {
     case LCD_MSG_SCANNING:   lcd.setCursor(0,0); lcd.write(byte(3)); lcd.print(" Scanning..."); lcd.setCursor(0,1); lcd.print(m.line2); break;
     case LCD_MSG_SUCCESS:    
       lcd.setCursor(0,0); lcd.write(byte(1)); 
-      // Display event type if available in line1
       if (strlen(m.line1) > 0) {
-        lcd.print(" " + String(m.line1));  // "CHECK IN!" or "CHECK OUT!"
+        lcd.print(" " + String(m.line1));
       } else {
         lcd.print(" Welcome!");
       }

@@ -389,6 +389,16 @@ router.get(
     res.setHeader('X-Firmware-Version', firmware.version);
     res.setHeader('X-MD5', firmware.checksum);
 
+
+
+    // Simpler approach: The current endpoint DOES serve the binary.
+    // So we should provide the full URL to THIS endpoint.
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.headers['x-forwarded-host'] || req.get('host');
+    const fullUrl = `${protocol}://${host}${req.originalUrl.split('?')[0]}?device_uuid=${device_uuid}&version=0.0.0&force=true`; // force=true to skip version check
+
+    res.setHeader('X-Binary-URL', fullUrl);
+
     const stream = fs.createReadStream(firmwarePath);
     stream.pipe(res);
   })
