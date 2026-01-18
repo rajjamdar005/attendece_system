@@ -400,6 +400,7 @@ router.get(
   })
 );
 
+
 /**
  * GET /api/v1/devices/firmware/binary
  * Serve the actual firmware binary file
@@ -439,16 +440,20 @@ router.get(
       path: firmwarePath
     });
 
-    // CRITICAL: Set correct headers for binary download
-    // FIX: Send file directly without streaming to preserve Content-Length header
+    // CRITICAL FIX: Force HTTP/1.0 and disable chunked encoding
+    res.status(200);
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Length', fileSize);
     res.setHeader('Content-Disposition', 'attachment; filename="firmware.bin"');
     res.setHeader('Cache-Control', 'no-cache');
+    
+    // FORCE non-chunked encoding for ESP32 compatibility
+    res.setHeader('Connection', 'close');
+    res.removeHeader('Transfer-Encoding');
 
-    // FIX: Read file and send as buffer to ensure Content-Length is preserved
+    // Read and send file as buffer
     const fileBuffer = fs.readFileSync(firmwarePath);
-    res.send(fileBuffer);
+    res.end(fileBuffer); // Use res.end() instead of res.send()
 
     logger.info('[FIRMWARE] Binary download complete');
   })
