@@ -4,7 +4,7 @@ import os
 
 def copy_firmware(source, target, env):
     # Get firmware version from source file
-    version = "2.0.0"  # Default version
+    version = "2.2.0"  # Default version
     
     # Create output directory
     output_dir = os.path.join(env.get("PROJECT_DIR"), "bin")

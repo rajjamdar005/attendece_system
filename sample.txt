@@ -339,6 +339,11 @@ router.post(
 /**
  * GET /api/v1/devices/firmware
  * Check for firmware update (called by ESP32)
+ * Returns 304 if up to date, 200 with binary if update available
+ */
+/**
+ * GET /api/v1/devices/firmware
+ * Check for firmware update (called by ESP32)
  * Returns 304 if up to date, 200 with headers if update available
  */
 router.get(
@@ -382,11 +387,7 @@ router.get(
     // Build the binary URL - CRITICAL for ESP32 OTA
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const host = req.headers['x-forwarded-host'] || req.get('host');
-    
-    // FIX: Trim whitespace from version parameter to prevent URL encoding issues
-    const cleanVersion = version ? version.trim() : version;
-    const binaryUrl = `${protocol}://${host}/api/v1/devices/firmware/binary?device_uuid=${device_uuid}&version=${cleanVersion}`;
-    
+    const binaryUrl = `${protocol}://${host}/api/v1/devices/firmware/binary?device_uuid=${device_uuid}&version=${version}`;
     res.setHeader('X-Binary-URL', binaryUrl);
 
     // For the check endpoint, return JSON with update info
