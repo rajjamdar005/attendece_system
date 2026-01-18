@@ -341,6 +341,11 @@ router.post(
  * Check for firmware update (called by ESP32)
  * Returns 304 if up to date, 200 with binary if update available
  */
+/**
+ * GET /api/v1/devices/firmware
+ * Check for firmware update (called by ESP32)
+ * Returns 304 if up to date, 200 with headers if update available
+ */
 router.get(
   '/firmware',
   asyncHandler(async (req, res) => {
@@ -360,23 +365,14 @@ router.get(
       return res.status(304).send(); // Not modified
     }
 
-    // Compare versions (simple string comparison for now)
+    // Compare versions
     if (version && version >= firmware.version) {
       logger.info('[FIRMWARE] Device is up to date', { device: version, server: firmware.version });
       return res.status(304).send(); // Not modified
     }
 
-    // Send firmware binary
-    const firmwarePath = path.join(FIRMWARE_DIR, firmware.filename);
-    if (!fs.existsSync(firmwarePath)) {
-      logger.error('[FIRMWARE] File not found', { path: firmwarePath });
-      return res.status(404).json({
-        success: false,
-        error: { message: 'Firmware file not found' }
-      });
-    }
-
-    logger.info('[FIRMWARE] Sending update', {
+    // CRITICAL: Set the headers that ESP32 expects BEFORE sending response
+    logger.info('[FIRMWARE] Sending update headers', {
       device_uuid,
       from: version,
       to: firmware.version,
@@ -384,23 +380,83 @@ router.get(
       md5: firmware.checksum
     });
 
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', firmware.file_size);
+    // Set the custom headers that ESP32 OTA code expects
     res.setHeader('X-Firmware-Version', firmware.version);
     res.setHeader('X-MD5', firmware.checksum);
 
-
-
-    // Simpler approach: The current endpoint DOES serve the binary.
-    // So we should provide the full URL to THIS endpoint.
+    // Build the binary URL - CRITICAL for ESP32 OTA
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const host = req.headers['x-forwarded-host'] || req.get('host');
-    const fullUrl = `${protocol}://${host}${req.originalUrl.split('?')[0]}?device_uuid=${device_uuid}&version=0.0.0&force=true`; // force=true to skip version check
+    const binaryUrl = `${protocol}://${host}/api/v1/devices/firmware/binary?device_uuid=${device_uuid}&version=${version}`;
+    res.setHeader('X-Binary-URL', binaryUrl);
 
-    res.setHeader('X-Binary-URL', fullUrl);
+    // For the check endpoint, return JSON with update info
+    res.status(200).json({
+      available: true,
+      version: firmware.version,
+      binary_url: binaryUrl,
+      md5: firmware.checksum,
+      size: firmware.file_size
+    });
+  })
+);
+
+/**
+ * GET /api/v1/devices/firmware/binary
+ * Serve the actual firmware binary file
+ */
+router.get(
+  '/firmware/binary',
+  asyncHandler(async (req, res) => {
+    const { device_uuid, version } = req.query;
+
+    logger.info('[FIRMWARE] Binary download request', { device_uuid, version });
+
+    // Get active firmware
+    const { data: firmware, error } = await supabase
+      .from('firmware')
+      .select('*')
+      .eq('is_active', true)
+      .single();
+
+    if (error || !firmware) {
+      logger.error('[FIRMWARE] No active firmware found');
+      return res.status(404).json({ error: 'No firmware available' });
+    }
+
+    const firmwarePath = path.join(FIRMWARE_DIR, firmware.filename);
+
+    if (!fs.existsSync(firmwarePath)) {
+      logger.error('[FIRMWARE] File not found', { path: firmwarePath });
+      return res.status(404).json({ error: 'Firmware file not found' });
+    }
+
+    const stat = fs.statSync(firmwarePath);
+    const fileSize = stat.size;
+
+    logger.info('[FIRMWARE] Serving binary', {
+      version: firmware.version,
+      size: fileSize,
+      path: firmwarePath
+    });
+
+    // CRITICAL: Set correct headers for binary download
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', fileSize);
+    res.setHeader('Content-Disposition', 'attachment; filename="firmware.bin"');
+    res.setHeader('Cache-Control', 'no-cache');
 
     const stream = fs.createReadStream(firmwarePath);
     stream.pipe(res);
+
+    stream.on('end', () => {
+      logger.info('[FIRMWARE] Binary download complete');
+    });
+
+    stream.on('error', (err) => {
+      logger.error('[FIRMWARE] Error serving binary', err);
+      res.status(500).json({ error: 'Error serving firmware' });
+    });
   })
 );
 
