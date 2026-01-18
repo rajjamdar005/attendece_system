@@ -94,7 +94,7 @@ router.post(
     body('secret').notEmpty().withMessage('Provisioning secret required'),
   ],
   asyncHandler(async (req, res) => {
-    logger.info('[DEVICE REGISTER] Request received', { 
+    logger.info('[DEVICE REGISTER] Request received', {
       body: req.body,
       ip: req.ip,
       headers: {
@@ -107,8 +107,8 @@ router.post(
 
     // Verify provisioning secret (in production, use secure method)
     const PROVISIONING_SECRET = process.env.DEVICE_PROVISIONING_SECRET || 'change-me-in-production';
-    
-    logger.info('[DEVICE REGISTER] Checking secret', { 
+
+    logger.info('[DEVICE REGISTER] Checking secret', {
       providedSecret: secret,
       expectedSecret: PROVISIONING_SECRET,
       match: secret === PROVISIONING_SECRET
@@ -139,13 +139,13 @@ router.post(
 
     if (existing) {
       logger.warn('[DEVICE REGISTER] Device already exists - generating new token', { device_uuid, existing });
-      
+
       // Delete old tokens
       await supabase
         .from('device_tokens')
         .delete()
         .eq('device_id', existing.id);
-      
+
       // Generate new device token
       const token = generateDeviceToken();
       const token_hash = await hashDeviceToken(token);
@@ -376,17 +376,19 @@ router.get(
       });
     }
 
-    logger.info('[FIRMWARE] Sending update', { 
-      device_uuid, 
-      from: version, 
+    logger.info('[FIRMWARE] Sending update', {
+      device_uuid,
+      from: version,
       to: firmware.version,
-      size: firmware.file_size 
+      size: firmware.file_size,
+      md5: firmware.checksum
     });
 
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Length', firmware.file_size);
     res.setHeader('X-Firmware-Version', firmware.version);
-    
+    res.setHeader('X-MD5', firmware.checksum);
+
     const stream = fs.createReadStream(firmwarePath);
     stream.pipe(res);
   })
@@ -495,11 +497,11 @@ router.post(
       throw new Error(error.message);
     }
 
-    logger.info('[FIRMWARE] Uploaded', { 
-      version, 
-      size: req.file.size, 
+    logger.info('[FIRMWARE] Uploaded', {
+      version,
+      size: req.file.size,
       by: req.user.username,
-      active: firmware.is_active 
+      active: firmware.is_active
     });
 
     res.status(201).json({

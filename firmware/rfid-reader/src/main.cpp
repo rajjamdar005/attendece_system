@@ -16,6 +16,7 @@
  *  - Crash logging
  */
 
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -197,6 +198,8 @@ void processLcdMessage(LcdMessage& m);
 void setupMDNS();
 void checkHttpOTA();
 bool checkAntiPassback(const String& uid, const String& eventType);
+void updateAntiPassback(const String& uid, const String& eventType);
+void lcdTask(void* pv);
 /* -------------------------------------------------- */
 
 void setup() {
