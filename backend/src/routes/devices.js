@@ -440,22 +440,17 @@ router.get(
     });
 
     // CRITICAL: Set correct headers for binary download
+    // FIX: Send file directly without streaming to preserve Content-Length header
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Length', fileSize);
     res.setHeader('Content-Disposition', 'attachment; filename="firmware.bin"');
     res.setHeader('Cache-Control', 'no-cache');
 
-    const stream = fs.createReadStream(firmwarePath);
-    stream.pipe(res);
+    // FIX: Read file and send as buffer to ensure Content-Length is preserved
+    const fileBuffer = fs.readFileSync(firmwarePath);
+    res.send(fileBuffer);
 
-    stream.on('end', () => {
-      logger.info('[FIRMWARE] Binary download complete');
-    });
-
-    stream.on('error', (err) => {
-      logger.error('[FIRMWARE] Error serving binary', err);
-      res.status(500).json({ error: 'Error serving firmware' });
-    });
+    logger.info('[FIRMWARE] Binary download complete');
   })
 );
 

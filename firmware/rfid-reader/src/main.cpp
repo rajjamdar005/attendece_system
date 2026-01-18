@@ -59,7 +59,7 @@ const char* DEVICE_PROVISIONING_SECRET = "my-secure-provisioning-key-2026";
 const char* OTA_UPDATE_URL = "https://attendece-system.onrender.com/api/v1/devices/firmware";  // FIXED - removed space
 
 const unsigned long DEBOUNCE_TIME        = 3000;
-const unsigned long HEARTBEAT_INTERVAL   = 60000;   // CHANGED: 1 minute (was 5 minutes)
+const unsigned long HEARTBEAT_INTERVAL   = 300000;   // CHANGED: 1 minute (was 5 minutes)
 const unsigned long LCD_MESSAGE_TIME     = 2000;
 const unsigned long RFID_SCAN_INTERVAL   = 50;
 const unsigned long NETWORK_CHECK_INTERVAL = 100;
