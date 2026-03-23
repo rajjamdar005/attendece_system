@@ -12,26 +12,6 @@ A production-ready, networked RFID attendance system with offline support, real-
 - **Scalable**: Handles thousands of daily events
 - **Robust**: Retry logic, heartbeat monitoring, OTA firmware updates
 
-## 📦 Project Structure
-
-```
-attend/
-├── firmware/              # ESP32 Arduino code
-│   ├── rfid-reader/      # Main firmware sketch
-│   └── docs/             # Hardware setup guides
-├── backend/              # Node.js Express API
-│   ├── src/
-│   ├── migrations/       # Database migrations
-│   └── tests/
-├── frontend/             # React + Vite dashboard
-│   ├── src/
-│   └── public/
-├── supabase/             # Supabase config & Edge Functions
-│   ├── migrations/
-│   └── functions/
-├── infra/                # Docker, CI/CD, deployment
-└── docs/                 # Full documentation
-```
 
 ## 🚀 Quick Start
 
@@ -106,15 +86,6 @@ VITE_SUPABASE_ANON_KEY=your-anon-key
 #define DEVICE_UUID "esp-01"
 ```
 
-## 📊 Database Schema
-
-- `companies` - Tenant organizations
-- `employees` - Staff members per company
-- `rfid_tags` - RFID card/tag registry
-- `devices` - ESP32 reader registry
-- `attendance_logs` - All scan events
-- `users` - Dashboard users with RBAC
-- `device_tokens` - Device authentication
 
 ## 🔐 Security
 
@@ -149,17 +120,6 @@ npm run test:integration
 npm run test:load
 ```
 
-## 📱 Hardware Bill of Materials (per reader)
-
-| Component | Cost | Notes |
-|-----------|------|-------|
-| ESP32 Dev Board | ₹300-800 | Any ESP32 variant |
-| MFRC522 RFID Module | ₹80-300 | 13.56MHz |
-| Power Supply (5V 2A) | ₹300-800 | USB or wall adapter |
-| Buzzer (optional) | ₹20-50 | Audio feedback |
-| LED (optional) | ₹5-20 | Visual feedback |
-| Enclosure | ₹200-700 | 3D printed or purchased |
-| **Total per reader** | **₹905-2,670** | |
 
 ## 🛠️ Deployment
 
@@ -205,5 +165,5 @@ Built with ESP32, Supabase, React, and modern web standards for reliable attenda
 
 ---
 
-**Version:** 1.0.0  
+**Version:** 2.0.0  
 **Last Updated:** October 29, 2025
